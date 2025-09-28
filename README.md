@@ -21,7 +21,7 @@ See [ECON5166-期末專案的管理與交付規範](https://docs.google.com/docu
 | 施卲 | B12204033 | dddoooouble | PM |
 | 黃呈祥 | R13323034 | owen0321 | DE |
 | 鄭賀榕 | B10302350 | herong0101 | DE |
-| 黃鈺鈞 | R13323025 | | DA |
+| 黃鈺鈞 | R13323025 | nnychhi | DA |
 | 史淳瑜 | R13323039 | fish3223 | DA |
 
 ## Link to Meeting Note 
