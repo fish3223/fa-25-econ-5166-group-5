@@ -1,0 +1,10 @@
+[project]
+name = "fa-25-econ-5166-group-5"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+	"pandas",
+	"numpy"
+]
