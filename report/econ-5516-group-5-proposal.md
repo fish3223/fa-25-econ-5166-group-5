@@ -1,0 +1,6 @@
+- Author: group5
+- Date created: 20250930
+- File Description: Proposal.
+- [File link](https://docs.google.com/document/d/1wC9QGvCMFIjKDU32rgkhL3tMwfDmbjtjlpSZVFanP0g/edit?tab=t.0#heading=h.u4v9mlb5wwtg)
+- External file update log:
+    - 20250930: file created
