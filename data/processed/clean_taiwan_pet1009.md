@@ -54,23 +54,16 @@ library(kableExtra)
 
 # 3. 敘述統計分析
 下表呈現收容時間「超過一年」與「少於一年」兩組動物在主要變數上的平均值（Mean）、標準差（SD），以及兩組之間的差異（Diff）。
+**Table 1. Summary Statistics by Shelter Duration (Over 1 Year vs. Less)**
 
-```{r summary-table, echo=FALSE}
-table_data <- data.frame(
-  Variable = c("% Cat", "% Dog", "% Male", "is_sterilized", "% Small Body Type"),
-  Mean_1yr = c(0.0866, 0.9134, 0.5288, 0.7465, 0.1329),
-  SD_1yr = c(0.2813, 0.2813, 0.4992, 0.4351, 0.3395),
-  Mean_less1yr = c(0.2124, 0.7862, 0.4910, 0.5263, 0.2265),
-  SD_less1yr = c(0.4091, 0.4100, 0.5000, 0.4994, 0.4186),
-  Diff = c(-0.126, 0.127, 0.038, 0.220, -0.094)
-)
+| Variable           | ≥ 1 Year Mean | ≥ 1 Year SD | < 1 Year Mean | < 1 Year SD | Diff  |
+|--------------------|---------------|--------------|----------------|--------------|-------|
+| % Cat              | 0.0866        | 0.2813       | 0.2124         | 0.4091       | -0.126 |
+| % Dog              | 0.9134        | 0.2813       | 0.7862         | 0.4100       | 0.127 |
+| % Male             | 0.5288        | 0.4992       | 0.4910         | 0.5000       | 0.038 |
+| is_sterilized      | 0.7465        | 0.4351       | 0.5263         | 0.4994       | 0.220 |
+| % Small Body Type  | 0.1329        | 0.3395       | 0.2265         | 0.4186       | -0.094 |
 
-kable(table_data, format = "html", booktabs = TRUE, align = "lccccc",
-      col.names = c("Variable", "Mean", "SD", "Mean", "SD", "Diff"),
-      caption = "Table 1. Summary Statistics by Shelter Duration (Over 1 Year vs. Less)") %>%
-  kable_styling(full_width = FALSE, bootstrap_options = c("striped", "hover")) %>%
-  add_header_above(c(" " = 1, "≥ 1 Year" = 2, "< 1 Year" = 2, "Comparison" = 1))
-```
 
 ---
 
