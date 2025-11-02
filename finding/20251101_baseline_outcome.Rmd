@@ -1,0 +1,339 @@
+---
+title: "20251101_Baseline_Outcome"
+author: "Yu-Chun Huang"
+output: html_document
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# Background
+
+-   **Author**: `<Yu-Chun Huang>`
+-   **Created At**: `<2025-11-01>`
+-   **Research Motivation and Context (why are we interested in the findings?)：**
+-   **Main Findings and Takeaways：**
+-   **Future Direciton：**
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(lmtest)
+library(ranger)
+library(broom)
+library(gt)
+library(glue)
+library(ggplot2)
+```
+
+```{r}
+# import data
+austin <- read.csv("/Users/nnychhi/Desktop/碩二/austin.csv")
+
+# data clean up
+austin_clear <- austin %>%
+  # drop irrelevant variable
+  select(-c("Name", "Found.Location", "Sex.upon.Intake", "Age.upon.Intake", 
+            "Date.of.Birth", "Outcome.Subtype", "Age.upon.Outcome")) %>%
+  # rename in lower case
+  rename_with(tolower) %>%
+  # filter for animal and outcome type 
+  filter(animal.type %in% c("Cat", "Dog"), outcome.type == "Adoption") %>%
+  mutate(animal.type = factor(animal.type, levels = c("Dog", "Cat"))) %>% # 0: dog
+  # standardized name form
+  rename(intake.datetime = intake_datetime,
+         outcome.datetime = outcome_datetime) %>%
+  # calculate duration of stay
+  mutate(start.date = ymd_hms(intake.datetime),
+         end.date = ymd_hms(outcome.datetime),
+         stay.day.round = round(as.numeric(difftime(end.date, start.date, units = "days")), 2),
+         stay.day = floor(as.numeric(difftime(end.date, start.date, units = "days")))) %>%
+  # adjustment
+  select(-c("outcome.type", "start.date", "end.date"))%>%
+  # variable redefined: sex_upon_outcome
+  mutate(
+    sterilized = case_when(
+      grepl("Neutered|Spayed", sex.upon.outcome, ignore.case = TRUE) ~ "Sterilized",
+      grepl("Intact", sex.upon.outcome, ignore.case = TRUE) ~ "Intact",
+      TRUE ~ "Unknown",
+    ),
+    sex = case_when(
+      sex.upon.outcome == "Unknown" ~ "Unknown",
+      TRUE ~ str_to_title(word(sex.upon.outcome, -1))  # pick last word：Male / Female
+    ),
+    sterilized = factor(sterilized, levels = c("Intact", "Sterilized", "Unknown")), # 0:未絕育
+    sex = factor(sex, levels = c("Male", "Female", "Unknown")) # 0: 雄性
+  ) %>%
+  select(-sex.upon.outcome) %>%
+  # variable redefined: breed
+  mutate(is_mixed = if_else(str_detect(breed, "Mix|/|-|&"), "Mixed", "Purebred"),
+         is_mixed = factor(is_mixed, levels = c("Purebred", "Mixed")) # 0: 純種
+         ) %>%
+  # variable redefined: color
+  mutate(
+    color_type = case_when(
+      str_detect(color, "(?i)Tabby|Brindle|Tortie|Calico|Merle|Point|Tick|Spotted|Speckled") ~ "Patterned",
+      str_count(color, "/|&| ") == 0 ~ "Solid",
+      str_count(color, "/|&| ") == 1 ~ "Bicolor",
+      str_count(color, "/|&| ") >= 2 ~ "Tricolor+",
+      TRUE ~ "Unknown"
+    ),
+    color_type = factor(color_type, levels = c("Solid", "Bicolor", "Tricolor+", "Patterned")) # 0: 純色
+  ) %>%
+  # adjust variable name form
+  rename_with(~ str_replace_all(.x, "\\.", "_"))
+  
+# further selection for analysis 
+# (austin_clear remains some vars for future analysis)
+austin_for_analysis <- austin_clear %>%
+  select(-c("intake_datetime", "intake_type", "intake_condition", "stay_day",
+            "breed", "color", "outcome_datetime")) %>%
+  mutate(log_stay_day_round = log1p(stay_day_round)) %>%
+  # drop incomplete observations
+  filter(
+    if_all(
+      c(sex, sterilized, color_type),
+      ~ . != "Unknown" & !is.na(.)
+    )
+  )
+# print first 10 obs
+head(austin_for_analysis, 10)
+```
+
+```{r}
+# Before conducting the analysis, report summary statistics for all variables 
+# that will be used in this notebook:
+#   - For numeric variables: mean, min, 25th percentile, median, 75th percentile, 
+#     max, standard deviation, and number of observations.
+#   - For categorical variables: number of observations and the counts/percentages 
+#     of the ten most frequent categories.
+# Conclude this block with the complete summary statistics.
+```
+
+### The actual analysis starts below
+
+#### OLS estimation
+
+```{r}
+# baseline analysis: OLS + RF
+## OLS ---
+lm_baseline <- lm(log_stay_day_round ~ animal_type + sterilized + sex + is_mixed 
+                  + color_type, data = austin_for_analysis)
+
+lm_baseline_summary <- tidy(lm_baseline, conf.int = TRUE)
+
+vc_hc1_lm_baseline <- sandwich::vcovHC(lm_baseline, type = "HC1")
+tidy_hc1 <- broom::tidy(lm_baseline, conf.int = TRUE, vcov = vc_hc1_lm_baseline)
+
+# star for estimated coefficients
+star <- function(p){
+  ifelse(p < 0.01, "***",
+         ifelse(p < 0.05, "**",
+                ifelse(p < 0.10, "*", "")))
+}
+
+# plot: estimated coefficient
+coef_plot <- tidy_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = recode(term,
+                       "animal_typeCat" = "Animal: Cat",
+                       "sterilizedSterilized" = "Sterilized",
+                       "sexFemale" = "Sex: Female",
+                       "is_mixedMixed" = "Breed: Mixed",
+                       "color_typeBicolor" = "Color: Bicolor",
+                       "color_typeTricolor+" = "Color: Tricolor+",
+                       "color_typePatterned" = "Color: Patterned"
+  ))
+
+ggplot(coef_plot, aes(x = term, y = estimate)) +
+  geom_point(size=3, color="steelblue") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2, color="steelblue") +
+  geom_hline(yintercept = 0, linetype="dashed", color="gray50") +
+  coord_flip() +
+  labs(
+    title = "Effect of Animal Characteristics on Days to Adoption (log(1 + days))",
+    subtitle = "OLS coefficients with 95% confidence intervals (HC1 robust SE)",
+    x = "",
+    y = "Coefficient"
+  )
+```
+
+```{r}
+# result table preparation
+tbl_coef <- tidy_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(term,
+                  "animal_typeCat"     = "Animal: Cat",
+                  "sterilizedSterilized" = "Sterilized",
+                  "sexFemale"          = "Sex: Female",
+                  "is_mixedMixed"      = "Breed: Mixed",
+                  "color_typeBicolor"  = "Color: Bicolor",
+                  "color_typeTricolor+"= "Color: Tricolor+",
+                  "color_typePatterned"= "Color: Patterned"
+    ),
+    sig  = star(p.value),
+    est_with_star = ifelse(sig=="", 
+                           sprintf("%.3f", estimate),
+                           sprintf("%.3f<sup>%s</sup>", estimate, sig)),
+    ci_col = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+  ) %>%
+  transmute(
+    Term = term,
+    Estimate = est_with_star,
+    `Std. Error (HC1)` = sprintf("%.3f", std.error),
+    `95% CI` = ci_col,
+    `p-value` = sprintf("%.3f", p.value)
+  )
+
+# add outcome variable mean, r square
+g_stats <- glance(lm_baseline)
+y_mean  <- mean(austin_for_analysis$log_stay_day_round, na.rm = TRUE)
+
+# result table
+result_tbl <- tbl_coef %>%
+  gt() %>%
+  tab_header(
+    title = md("**OLS results with HC1 robust standard errors**"),
+    subtitle = md(glue("Outcome mean (log(1 + days)) = **{sprintf('%.3f', y_mean)}**"))
+  ) %>%
+  fmt_markdown(columns = "Estimate") %>%
+  cols_label(
+    Term = "Variable",
+    Estimate = "Estimate",
+    `Std. Error (HC1)` = "Std. Error (HC1)",
+    `95% CI` = "95% CI",
+    `p-value` = "p-value"
+  ) %>%
+  cols_align(
+    align = "left",
+    columns = vars(Term)
+  ) %>%
+  cols_align(
+    align = "right",
+    columns = c("Estimate", "Std. Error (HC1)", "95% CI", "p-value")
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      glue("**R²** = {sprintf('%.3f', g_stats$r.squared)}; ",
+           "**Adj. R²** = {sprintf('%.3f', g_stats$adj.r.squared)}; ",
+           "**N** = {g_stats$nobs}")
+    )
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      "**Base groups:** Animal = Dog; Sterilization = Intact; Sex = Male; Breed = Purebred; Color = Solid."
+    )
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(size = "smaller", color = "gray40", align = "left")
+    ),
+    locations = cells_source_notes()
+  ) %>%
+  opt_row_striping()
+
+result_tbl
+```
+
+#### Random forest estimation
+
+We apply random forest model to estimate the importance of each variables, and the result can be compared with the result of OLS.
+
+To conduct random forest estimation. First, we find the best number of covariates randomly selected at each split. (denoted by m in the lecture note)
+
+```{r}
+## RF ---
+set.seed(5166)
+
+# find the best m (number of covariates randomly selected at each split)
+p <- 5
+mtry_values <- 1:p
+
+m_results <- data.frame(mtry = mtry_values, OOB_MSE = NA)
+
+ # test for different m
+for (i in seq_along(mtry_values)) {
+  rf_temp <- ranger(
+    log_stay_day_round ~ animal_type + sterilized + sex + is_mixed + color_type,
+    data = austin_for_analysis,
+    num.trees = 500,
+    mtry = mtry_values[i],
+    importance = "impurity"
+  )
+  m_results$OOB_MSE[i] <- rf_temp$prediction.error
+}
+
+ # best m: 3
+print(m_results)
+#best_mtry <- m_results$mtry[which.min(m_results$OOB_MSE)]
+#cat("Best mtry =", best_mtry, "\n")
+```
+We can see that the OOB_MSE is lowest when m = 3.
+
+So we then conduct random forest and set m = 3.
+The result shows below:
+```{r}
+# RF model
+rf_baseline <- ranger(
+  log_stay_day_round ~ animal_type + sterilized + sex + is_mixed + color_type,
+  data = austin_for_analysis,
+  num.trees = 500,
+  mtry = 3,
+  importance = "permutation" 
+  # use permutation since we focus on importance
+)
+
+rf_baseline$variable.importance
+
+# rf importance plot
+rf_importance <- as.data.frame(rf_baseline$variable.importance) %>%
+  rownames_to_column("Variable") %>%
+  rename(Importance = 2)
+
+# adjust variable names
+as_ols_names <- c(
+  animal_type = "Animal type",
+  sterilized  = "Sterilized",
+  sex         = "Sex",
+  is_mixed    = "Breed",
+  color_type  = "Color pattern"
+)
+
+display_order <- c("Animal type","Sterilized","Sex","Breed","Color pattern")
+
+rf_importance <- rf_importance %>%
+  mutate(
+    Variable = recode(Variable, !!!as_ols_names),
+    Variable = factor(Variable, levels = rev(display_order))
+  )
+
+ggplot(rf_importance, aes(x = Variable, y = Importance)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title    = "Variable Importance from Random Forest",
+    subtitle = "Permutation-based importance (500 trees, mtry = 3)",
+    x = "",
+    y = "Importance (Increase in prediction error)",
+    caption = paste(
+      "Base groups (OLS): Animal = Dog; Sterilization = Intact; Sex = Male;",
+      "Breed = Purebred; Color = Solid.\n"
+    )
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.caption = element_text(
+      hjust = 0, color = "gray35", size = 10,
+      margin = ggplot2::margin(t = 8, unit = "pt") 
+    ),
+    plot.caption.position = "plot",
+    axis.text.y  = element_text(size = 12),
+    axis.text.x  = element_text(size = 11),
+    panel.grid.minor = element_blank()
+  )
+```
