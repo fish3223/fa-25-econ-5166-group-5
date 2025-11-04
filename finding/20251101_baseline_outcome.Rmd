@@ -13,9 +13,12 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 
 -   **Author**: `<Yu-Chun Huang, Chun-yu Shih>`
 -   **Created At**: `<2025-11-01>`
--   **Research Motivation and Context (why are we interested in the findings?)**: `<The animal center has to balance the welfare of animals and the efficiency of corporate operations. Analyzing and explaining the staying day of animals can help us design targeted intervention, like  behavioral training and adoption matching activities.>`
--   **Main Findings and Takeaways**：`<Using OLS model, we found that dogs are more easily adopted than cats. To determine the most important feature that causes the difference of days animal staying, we use the random forest model. Excluding the animals type, the most important feature is the animals color pattern. In our case, there are 417 different colors which may cause the lack of sample in each colors. Therefore, we simplify the different colors as the color pattern, like solid color, bicolor, more than 3 colors, and patterned. As the regression result, the solid color animals are the most easily to be adopted and the tricolor are the most difficult. The last result makes us surprisingly, the intact animals are more easily adopted than the sterilized animals.>`
--   **Future Direciton**：`<Using survival analysis to estimate the timing of adoption dynamically. Analyzing the data type of sterilized, less than 4% animals are intact animals. It may cause the biased significantly, the solution we thought is using the imbalanced learning method on our sterilized data.>`
+-   **Research Motivation and Context (why are we interested in the findings?)**:  
+The animal center has to balance the welfare of animals and the efficiency of corporate operations. Analyzing and explaining the staying day of animals can help us design targeted intervention, like  behavioral training and adoption matching activities.
+-   **Main Findings and Takeaways**： 
+Using OLS model, we found that dogs are more easily adopted than cats. To determine the most important feature that causes the difference of days animal staying, we use the random forest model. Excluding the animals type, the most important feature is the animals color pattern. In our case, there are 417 different colors which may cause the lack of sample in each colors. Therefore, we simplify the different colors as the color pattern, like solid color, bicolor, more than 3 colors, and patterned. As the regression result, the solid color animals are the most easily to be adopted and the tricolor are the most difficult. The last result makes us surprisingly, the intact animals are more easily adopted than the sterilized animals.
+-   **Future Direciton**： 
+Using survival analysis to estimate the timing of adoption dynamically. Analyzing the data type of sterilized, less than 4% animals are intact animals. It may cause the biased significantly, the solution we thought is using the imbalanced learning method on our sterilized data.
 
 ```{r}
 library(readxl)
@@ -51,8 +54,8 @@ austin_clear <- austin %>%
   rename(intake.datetime = intake_datetime,
          outcome.datetime = outcome_datetime) %>%
   # calculate duration of stay
-  mutate(start.date = ymd_hm(intake.datetime),
-         end.date = ymd_hm(outcome.datetime),
+  mutate(start.date = ymd_hms(intake.datetime),
+         end.date = ymd_hms(outcome.datetime),
          stay.day.round = round(as.numeric(difftime(end.date, start.date, units = "days")), 2),
          stay.day = floor(as.numeric(difftime(end.date, start.date, units = "days")))) %>%
   # adjustment
@@ -226,10 +229,10 @@ ggplot(coef_plot, aes(x = reorder(term, estimate), y = estimate)) +
     x = "",
     y = "Coefficient"
   )
-# Our base group is the purebred male dog with solid color which has not sterilized yet.
-# We use 95% confidence interval with heteroskedasticity assumption.
-# As a result, almost all of variables have statistically significant explanation.
 ```
+ Our base group is the purebred male dog with solid color which has not sterilized yet.
+ We use 95% confidence interval with heteroskedasticity assumption.
+ As a result, almost all of variables have statistically significant explanation.
 
 ```{r}
 # result table preparation
@@ -307,10 +310,11 @@ result_tbl <- tbl_coef %>%
   opt_row_striping()
 
 result_tbl
-# Although all of variables have statistically significant, the sex and breed of animals have weaker explanation than others.
-# Because the explained variable y is the logarithm of staying day, the positive coefficient means the higher value of X the longer days animal staying.
-# Therefore, the staying day of cats is longer than dogs about 89% (e^0.640 - 1), the other variable are the same way to analyze.
 ```
+ Although all of variables have statistically significant, the sex and breed of animals have weaker explanation than others.
+ Because the explained variable y is the logarithm of staying day, the positive coefficient means the higher value of X the longer days animal staying.
+ Therefore, the staying day of cats is longer than dogs about 89% (e^0.640 - 1), the other variable are the same way to analyze.
+
 
 #### Random forest estimation
 
@@ -409,3 +413,4 @@ ggplot(rf_importance, aes(x = Variable, y = Importance)) +
     panel.grid.minor = element_blank()
   )
 ```
+ The result of random forest tells us "animal type" and "color pattern" are 2 variables that have most importance on the log stay days.
