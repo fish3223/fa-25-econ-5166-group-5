@@ -1,6 +1,6 @@
 ---
 title: "20251101_Baseline_Outcome"
-author: "Yu-Chun Huang"
+author: "Yu-Chun Huang, Chun-yu Shih"
 output: html_document
 date: "`r format(Sys.time(), '%Y-%m-%d')`"
 ---
@@ -11,11 +11,11 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 
 # Background
 
--   **Author**: `<Yu-Chun Huang>`
+-   **Author**: `<Yu-Chun Huang, Chun-yu Shih>`
 -   **Created At**: `<2025-11-01>`
--   **Research Motivation and Context (why are we interested in the findings?)：**
--   **Main Findings and Takeaways：**
--   **Future Direciton：**
+-   **Research Motivation and Context (why are we interested in the findings?)**: `<The animal center has to balance the welfare of animals and the efficiency of corporate operations. Analyzing and explaining the staying day of animals can help us design targeted intervention, like  behavioral training and adoption matching activities.>`
+-   **Main Findings and Takeaways**：`<Using OLS model, we found that dogs are more easily adopted than cats. To determine the most important feature that causes the difference of days animal staying, we use the random forest model. Excluding the animals type, the most important feature is the animals color pattern. In our case, there are 417 different colors which may cause the lack of sample in each colors. Therefore, we simplify the different colors as the color pattern, like solid color, bicolor, more than 3 colors, and patterned. As the regression result, the solid color animals are the most easily to be adopted and the tricolor are the most difficult. The last result makes us surprisingly, the intact animals are more easily adopted than the sterilized animals.>`
+-   **Future Direciton**：`<Using survival analysis to estimate the timing of adoption dynamically. Analyzing the data type of sterilized, less than 4% animals are intact animals. It may cause the biased significantly, the solution we thought is using the imbalanced learning method on our sterilized data.>`
 
 ```{r}
 library(readxl)
@@ -28,12 +28,15 @@ library(broom)
 library(gt)
 library(glue)
 library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggrepel)
 ```
 
 ```{r}
 # import data
-austin <- read.csv("/Users/nnychhi/Desktop/碩二/austin.csv")
-
+austin <- read.csv("/Users/shiatsushiyu/Documents/R/austin.csv")
 # data clean up
 austin_clear <- austin %>%
   # drop irrelevant variable
@@ -48,8 +51,8 @@ austin_clear <- austin %>%
   rename(intake.datetime = intake_datetime,
          outcome.datetime = outcome_datetime) %>%
   # calculate duration of stay
-  mutate(start.date = ymd_hms(intake.datetime),
-         end.date = ymd_hms(outcome.datetime),
+  mutate(start.date = ymd_hm(intake.datetime),
+         end.date = ymd_hm(outcome.datetime),
          stay.day.round = round(as.numeric(difftime(end.date, start.date, units = "days")), 2),
          stay.day = floor(as.numeric(difftime(end.date, start.date, units = "days")))) %>%
   # adjustment
@@ -112,6 +115,69 @@ head(austin_for_analysis, 10)
 #   - For categorical variables: number of observations and the counts/percentages 
 #     of the ten most frequent categories.
 # Conclude this block with the complete summary statistics.
+
+# Classified to numeric and character data
+num_vars <- austin_clear |> select(where(is.numeric))
+cat_vars <- austin_clear |> select(where(is.factor) | where(is.character))
+
+# Summary statistics of numeric data
+num_summary <- num_vars |> 
+  gather(variable, value) |>
+  group_by(variable) |>
+  summarise(
+    Obs. = sum(!is.na(value)),
+    Mean = mean(value, na.rm = TRUE),
+    S.D. = sd(value, na.rm = TRUE),
+    Min = min(value, na.rm = TRUE),
+    Q1 = quantile(value, 0.25, na.rm = TRUE),
+    Median = median(value, na.rm = TRUE),
+    Q3 = quantile(value, 0.75, na.rm = TRUE),
+    Max = max(value, na.rm = TRUE)
+  )
+cat("Numeric Variables Summary\n")
+print(num_summary)
+# Setting the title of categorical data
+title_map <- c(
+  animal_type = "Ratio of dogs and cats",
+  sterilized = "Ratio of sterilized",
+  sex = "Ratio of sex",
+  is_mixed = "Ratio of mixed",
+  color_type = "Ratio of number of colors",
+  intake_type = "Ratio of intake reasons",
+  intake_condition = "Ratio of intake conditions"
+)
+x_map <- c(
+  animal_type = "Dogs and cats",
+  sterilized = "Sterilized",
+  sex = "Sex",
+  is_mixed = "Mixed",
+  color_type = "Colors",
+  intake_type = "Intake reasons",
+  intake_condition = "Intake conditions"
+)
+# Summary statistics of categorical data
+max_unique <- 10
+cat_vars <- austin_clear %>% select(where(is.factor) | where(is.character))
+map(names(cat_vars), function(v) {
+  n_levels <- n_distinct(austin_clear[[v]])
+  if (n_levels <= max_unique) {
+    sumstat <- austin_clear %>%
+      count(!!sym(v)) %>%
+      mutate(percentage = round(100 * n / sum(n), 2), 
+             label = sprintf("%s (%.1f%%)", v, percentage))
+    
+    p <- ggplot(sumstat, aes(x = "", y = percentage, fill = !!sym(v))) +
+      geom_col(width = 0.5, color = "white") +
+      coord_polar(theta = "y") +
+      geom_label_repel(aes(label = percentage),
+                   position = position_stack(vjust = 0.5),
+                   size = 5, show.legend = FALSE,
+                   box.padding = 0.5, segment.color = "gray40") +
+  theme_void(base_size = 16) +
+  labs(title = title_map[[v]], fill = x_map[[v]])
+  }
+})
+
 ```
 
 ### The actual analysis starts below
@@ -160,6 +226,9 @@ ggplot(coef_plot, aes(x = reorder(term, estimate), y = estimate)) +
     x = "",
     y = "Coefficient"
   )
+# Our base group is the purebred male dog with solid color which has not sterilized yet.
+# We use 95% confidence interval with heteroskedasticity assumption.
+# As a result, almost all of variables have statistically significant explanation.
 ```
 
 ```{r}
@@ -238,6 +307,9 @@ result_tbl <- tbl_coef %>%
   opt_row_striping()
 
 result_tbl
+# Although all of variables have statistically significant, the sex and breed of animals have weaker explanation than others.
+# Because the explained variable y is the logarithm of staying day, the positive coefficient means the higher value of X the longer days animal staying.
+# Therefore, the staying day of cats is longer than dogs about 89% (e^0.640 - 1), the other variable are the same way to analyze.
 ```
 
 #### Random forest estimation
