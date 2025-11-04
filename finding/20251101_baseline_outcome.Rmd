@@ -149,7 +149,7 @@ coef_plot <- tidy_hc1 %>%
                        "color_typePatterned" = "Color: Patterned"
   ))
 
-ggplot(coef_plot, aes(x = term, y = estimate)) +
+ggplot(coef_plot, aes(x = reorder(term, estimate), y = estimate)) +
   geom_point(size=3, color="steelblue") +
   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2, color="steelblue") +
   geom_hline(yintercept = 0, linetype="dashed", color="gray50") +
