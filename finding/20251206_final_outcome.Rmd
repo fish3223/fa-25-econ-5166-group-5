@@ -1,0 +1,1847 @@
+---
+title: "20251206_final_outcome"
+author: "Yu-Chun Huang"
+date: "2025-12-06"
+output: html_document
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(janitor)
+library(lubridate)
+library(lmtest)
+library(ranger)
+library(broom)
+library(gt)
+library(glue)
+library(ggplot2)
+library(survival)
+library(patchwork)
+library(scales)
+library(reshape2)
+library(webshot2)
+library(margins)
+```
+
+- Preliminary data clean up: variable preparation and redefinition
+```{r}
+# import data
+austin <- read.csv("/Users/nnychhi/Desktop/碩二/austin.csv")
+
+# data clean up
+austin_clear <- austin %>%
+  # drop irrelevant variable
+  select(-c("Name", "Found.Location", "Sex.upon.Intake",  
+            "Date.of.Birth", "Outcome.Subtype", "Age.upon.Outcome")) %>%
+  # rename in lower case
+  rename_with(tolower) %>%
+  # filter for animal and outcome type 
+  filter(animal.type %in% c("Cat", "Dog"), outcome.type == "Adoption") %>%
+  mutate(animal.type = factor(animal.type, levels = c("Dog", "Cat"))) %>% # 0: dog
+  # standardized name form
+  rename(intake.datetime = intake_datetime,
+         outcome.datetime = outcome_datetime) %>%
+  # calculate duration of stay
+  mutate(start.date = ymd_hms(intake.datetime),
+         end.date = ymd_hms(outcome.datetime),
+         stay.day.round = round(as.numeric(difftime(end.date, start.date, units = "days")), 2),
+         stay.day = floor(as.numeric(difftime(end.date, start.date, units = "days")))) %>%
+  # adjustment
+  select(-c("outcome.type", "start.date", "end.date"))%>%
+  # variable redefined: sex_upon_outcome
+  mutate(
+    sterilized = case_when(
+      grepl("Neutered|Spayed", sex.upon.outcome, ignore.case = TRUE) ~ "Sterilized",
+      grepl("Intact", sex.upon.outcome, ignore.case = TRUE) ~ "Intact",
+      TRUE ~ "Unknown",
+    ),
+    sex = case_when(
+      sex.upon.outcome == "Unknown" ~ "Unknown",
+      TRUE ~ str_to_title(word(sex.upon.outcome, -1))  # pick last word：Male / Female
+    ),
+    sterilized = factor(sterilized, levels = c("Intact", "Sterilized", "Unknown")), # 0:未絕育
+    sex = factor(sex, levels = c("Male", "Female", "Unknown")) # 0: 雄性
+  ) %>%
+  select(-sex.upon.outcome) %>%
+  # variable redefine: breed
+  mutate(is_mixed = if_else(str_detect(breed, "Mix|/|-|&"), "Mixed", "Purebred"),
+         is_mixed = factor(is_mixed, levels = c("Purebred", "Mixed")) # 0: 純種
+         ) %>%
+  # variable redefine: color
+  mutate(
+    color_type = case_when(
+      str_detect(color, "(?i)Tabby|Brindle|Tortie|Calico|Merle|Point|Tick|Spotted|Speckled") ~ "Patterned",
+      str_count(color, "/|&| ") == 0 ~ "Solid",
+      str_count(color, "/|&| ") == 1 ~ "Bicolor",
+      str_count(color, "/|&| ") >= 2 ~ "Tricolor+",
+      TRUE ~ "Unknown"
+    ),
+    color_type = factor(color_type, levels = c("Solid", "Bicolor", "Tricolor+", "Patterned")) # 0: 純色
+  ) %>%
+  # variable redefine: age upon intake -> age_group
+  mutate(
+    age_years = case_when(
+      str_detect(age.upon.intake, "day")   ~ as.numeric(str_extract(age.upon.intake, "\\d+")) / 365,
+      str_detect(age.upon.intake, "week")  ~ as.numeric(str_extract(age.upon.intake, "\\d+")) / 52,
+      str_detect(age.upon.intake, "month") ~ as.numeric(str_extract(age.upon.intake, "\\d+")) / 12,
+      str_detect(age.upon.intake, "year")  ~ as.numeric(str_extract(age.upon.intake, "\\d+")),
+      TRUE ~ NA_real_
+    ),
+    age_group = case_when(
+      age_years < 0.5 ~ "Juvenile", # 幼年
+      age_years >= 0.5 ~ "Adult", # 成年
+      TRUE ~ NA_character_
+    ), 
+    age_group = factor(age_group, levels = c("Adult", "Juvenile")) # 0: 成年
+  ) %>%
+  select(-age_years) %>%
+  # variable redefine: intake condition -> special_condition
+  mutate(
+    special_condition = case_when(
+      intake.condition %in% c("Injured","Sick","Medical","Nursing","Pregnant","Behavior","Feral", "Other")
+      ~ "Special",
+      TRUE ~ "Normal"
+    ),
+    special_condition = factor(special_condition, levels = c("Normal", "Special")) # 0: normal condition (special care not needed)
+  ) %>%
+  # drop intake type unclear
+  filter(!intake.type %in% c("Public Assist", "Euthanasia Request")) %>%
+  # variable redefine: intake type
+  mutate(
+    stray = case_when(
+      intake.type == "Stray" ~ "Stray",
+      intake.type %in% c("Abandoned", "Owner Surrender") ~ "Owned",
+      TRUE ~ NA_character_
+    ),
+    stray = factor(stray, levels = c("Owned", "Stray")) # 0: Owned
+  ) %>%
+  # adjust variable name form
+  rename_with(~ str_replace_all(.x, "\\.", "_"))
+```
+
+- Further clean up for analysis: calculate for LOS, outlier exclusion
+```{r}
+# prepare variable, check for incomplete and factor levels
+# (austin_clear remains some vars for future analysis)
+austin_for_analysis <- austin_clear %>%
+  # select(-c("intake_datetime", "intake_type", "intake_condition", "stay_day",
+  #           "breed", "color", "outcome_datetime")) %>%
+  mutate(log_stay_day_round = log1p(stay_day_round)) %>%
+  # drop incomplete observations
+  filter(if_all(everything(), ~ !is.na(.))) %>%
+  filter(
+    if_all(where(is.factor),    ~ . != "Unknown") &
+      if_all(where(is.character), ~ . != "Unknown")
+  ) %>%
+  # reorder factor levels
+  mutate(
+    sterilized = factor(sterilized, levels = c("Intact", "Sterilized")),
+    sex = factor(sex, levels = c("Male", "Female")),
+    color_type = factor(color_type, levels = c("Solid", "Bicolor", "Tricolor+", "Patterned")),
+    age_group = factor(age_group, levels = c("Adult", "Juvenile")),
+    special_condition = factor(special_condition, levels = c("Normal", "Special")),
+    stray = factor(stray, levels = c("Owned", "Stray"))
+  )
+
+# preparing for further dog/ cat specific analysis
+ # for dog
+austin_for_analysis_dog <- austin_for_analysis %>%
+  # filter for dog
+  filter(animal_type == "Dog")
+
+ # for cat
+austin_for_analysis_cat <- austin_for_analysis %>%
+  # filter for cat
+  filter(animal_type == "Cat")
+
+# calculate LOS
+los_all <- median(austin_for_analysis$stay_day_round, na.rm = TRUE)
+los_dog <- median(austin_for_analysis_dog$stay_day_round, na.rm = TRUE)
+los_cat <- median(austin_for_analysis_cat$stay_day_round, na.rm = TRUE)
+
+# outliers determination
+Q1  <- quantile(austin_for_analysis$stay_day_round, 0.25)
+Q3  <- quantile(austin_for_analysis$stay_day_round, 0.75)
+IQR <- Q3 - Q1
+
+upper <- Q3 + 1.5 * IQR
+
+# for dog
+Q1_dog  <- quantile(austin_for_analysis_dog$stay_day_round, 0.25)
+Q3_dog  <- quantile(austin_for_analysis_dog$stay_day_round, 0.75)
+IQR_dog <- Q3_dog - Q1_dog
+
+upper_dog <- Q3_dog + 1.5 * IQR_dog
+
+# for cat
+Q1_cat  <- quantile(austin_for_analysis_cat$stay_day_round, 0.25)
+Q3_cat  <- quantile(austin_for_analysis_cat$stay_day_round, 0.75)
+IQR_cat <- Q3_cat - Q1_cat
+
+upper_cat <- Q3_cat + 1.5 * IQR_cat
+
+# drop outliers for analysis
+austin_for_analysis_all <- austin_for_analysis %>%
+  # drop outliers: right tail
+  filter(stay_day_round <= upper)%>%
+  # create LOS index
+  mutate(los_index = as.integer(stay_day_round <= los_all)) # 0: > LOS median
+
+ # for dog
+austin_for_analysis_dog <- austin_for_analysis_dog %>%
+  # drop outliers: right tail
+  filter(stay_day_round <= upper_dog) %>%
+  # create LOS index
+  mutate(los_index = as.integer(stay_day_round <= los_dog)) # 0: > LOS median
+
+ # for cat
+austin_for_analysis_cat <- austin_for_analysis_cat %>%
+  # drop outliers: right tail
+  filter(stay_day_round <= upper_cat) %>%
+  # create LOS index
+  mutate(los_index = as.integer(stay_day_round <= los_cat)) # 0: > LOS median
+```
+
+- Sanity check and first 10 obs.
+```{r}
+nrow(austin_clear)
+nrow(austin_for_analysis)
+nrow(austin_for_analysis_all)
+nrow(austin_for_analysis_dog)
+nrow(austin_for_analysis_cat)
+
+austin_for_analysis_all %>% tabyl(los_index)
+austin_for_analysis_dog %>% tabyl(los_index)
+austin_for_analysis_cat %>% tabyl(los_index)
+
+print(austin_for_analysis_all)
+print(austin_for_analysis_dog)
+print(austin_for_analysis_cat)
+```
+
+##- Summary plots
+```{r}
+# plots preparation
+austin_analysis_plot <- austin_for_analysis_all %>%
+  mutate(
+    los_index_f = factor(
+      ifelse(los_index == 1, "<=LOS", ">LOS"),
+      levels = c("<=LOS", ">LOS")
+    ),
+    special_condition = factor(special_condition, levels = c("Normal", "Special"))
+  )
+
+# theme ---------------------------------------------------------
+theme_plot <- theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0),
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 20, hjust = 1)
+  )
+
+# y-axis：0–100% -----------------------------
+scale_prop <- scale_y_continuous(
+  labels = percent_format(),
+  limits = c(0, 1),
+  expand = expansion(mult = c(0, 0.02))
+)
+```
+### Plot A
+```{r}
+# ====================================================================
+# A. 第一張：LOS / age_group / LOS_index / special_condition
+#    （整體 & 分別貓狗）
+# ====================================================================
+
+## row1: stay_day_round 分布（整體 / Dog / Cat） -----------------------
+
+pA1_all <- ggplot(austin_analysis_plot, aes(x = stay_day_round)) +
+  geom_histogram(binwidth = 5, fill = "skyblue", color = "white") +
+  labs(
+    title = "All animals",
+    x = "Stay days (rounded)",
+    y = "Count"
+  ) +
+  theme_plot
+
+pA1_dog <- austin_analysis_plot %>%
+  filter(animal_type == "Dog") %>%
+  ggplot(aes(x = stay_day_round)) +
+  geom_histogram(binwidth = 5, fill = "skyblue", color = "white") +
+  labs(
+    title = "Dogs",
+    x = "Stay days (rounded)",
+    y = "Count"
+  ) +
+  theme_plot
+
+pA1_cat <- austin_analysis_plot %>%
+  filter(animal_type == "Cat") %>%
+  ggplot(aes(x = stay_day_round)) +
+  geom_histogram(binwidth = 5, fill = "skyblue", color = "white") +
+  labs(
+    title = "Cats",
+    x = "Stay days (rounded)",
+    y = "Count"
+  ) +
+  theme_plot
+
+rowA1 <- pA1_all | pA1_dog | pA1_cat
+
+## row2: age_group 比例（整體 / Dog / Cat） ---------------------------
+
+pA2_all <- ggplot(austin_analysis_plot, aes(x = age_group)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "grey60") +
+  scale_prop +
+  labs(
+    title = "All animals",
+    x = "Age group",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+pA2_dog <- austin_analysis_plot %>%
+  filter(animal_type == "Dog") %>%
+  ggplot(aes(x = age_group)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "grey60") +
+  scale_prop +
+  labs(
+    title = "Dogs",
+    x = "Age group",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+pA2_cat <- austin_analysis_plot %>%
+  filter(animal_type == "Cat") %>%
+  ggplot(aes(x = age_group)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "grey60") +
+  scale_prop +
+  labs(
+    title = "Cats",
+    x = "Age group",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+rowA2 <- pA2_all | pA2_dog | pA2_cat
+
+## row3: LOS_index 比例（整體 / Dog / Cat） --------------------------
+
+pA3_all <- ggplot(austin_analysis_plot, aes(x = los_index_f)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "seagreen3") +
+  scale_prop +
+  labs(
+    title = "All animals",
+    x = "LOS group (median cutoff)",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+pA3_dog <- austin_analysis_plot %>%
+  filter(animal_type == "Dog") %>%
+  ggplot(aes(x = los_index_f)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "seagreen3") +
+  scale_prop +
+  labs(
+    title = "Dogs",
+    x = "LOS group (median cutoff)",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+pA3_cat <- austin_analysis_plot %>%
+  filter(animal_type == "Cat") %>%
+  ggplot(aes(x = los_index_f)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "seagreen3") +
+  scale_prop +
+  labs(
+    title = "Cats",
+    x = "LOS group (median cutoff)",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+rowA3 <- pA3_all | pA3_dog | pA3_cat
+
+## row4: special_condition 比例（整體 / Dog / Cat） -------------------
+
+pA4_all <- ggplot(austin_analysis_plot, aes(x = special_condition)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "tomato") +
+  scale_prop +
+  labs(
+    title = "All animals",
+    x = "Intake condition",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+pA4_dog <- austin_analysis_plot %>%
+  filter(animal_type == "Dog") %>%
+  ggplot(aes(x = special_condition)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "tomato") +
+  scale_prop +
+  labs(
+    title = "Dogs",
+    x = "Intake condition",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+pA4_cat <- austin_analysis_plot %>%
+  filter(animal_type == "Cat") %>%
+  ggplot(aes(x = special_condition)) +
+  geom_bar(aes(y = after_stat(prop), group = 1), fill = "tomato") +
+  scale_prop +
+  labs(
+    title = "Cats",
+    x = "Intake condition",
+    y = "Proportion"
+  ) +
+  theme_plot
+
+rowA4 <- pA4_all | pA4_dog | pA4_cat
+
+## Figure A -----------------------------------------------------------
+
+fig_A <- (rowA1 / rowA2 / rowA3 / rowA4) +
+  plot_annotation(title = "Figure A. Stay days and key LOS-related variables (overall vs by species)")
+fig_A
+```
+####Save plot A
+```{r}
+# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_A.png", fig_A, width = 14, height = 12, dpi = 300)
+```
+### Plot B
+```{r}
+# ====================================================================
+# B. 第二張：貓狗分別的 sex / is_mixed / color_type / sterilized 比率
+# ====================================================================
+
+make_species_prop_row <- function(var_name, xlab) {
+  var_sym <- rlang::sym(var_name)
+  
+  # Dogs
+  df_dog <- austin_analysis_plot %>%
+    filter(animal_type == "Dog") %>%
+    count(!!var_sym, name = "n") %>%
+    mutate(prop = n / sum(n))
+  
+  p_dog <- ggplot(df_dog, aes(x = !!var_sym, y = prop, fill = !!var_sym)) +
+    geom_col() +
+    scale_prop +
+    labs(
+      title = paste0("Dogs - ", xlab),
+      x = xlab,
+      y = "Proportion",
+      fill = xlab
+    ) +
+    theme_plot
+  
+  # Cats
+  df_cat <- austin_analysis_plot %>%
+    filter(animal_type == "Cat") %>%
+    count(!!var_sym, name = "n") %>%
+    mutate(prop = n / sum(n))
+  
+  p_cat <- ggplot(df_cat, aes(x = !!var_sym, y = prop, fill = !!var_sym)) +
+    geom_col() +
+    scale_prop +
+    labs(
+      title = paste0("Cats - ", xlab),
+      x = xlab,
+      y = "Proportion",
+      fill = xlab
+    ) +
+    theme_plot
+  
+  p_dog | p_cat
+}
+
+rowB1 <- make_species_prop_row("sex", "Sex")
+rowB2 <- make_species_prop_row("is_mixed", "Breed type")
+rowB3 <- make_species_prop_row("color_type", "Color type")
+rowB4 <- make_species_prop_row("sterilized", "Sterilization status")
+
+fig_B <- (rowB1 / rowB2 / rowB3 / rowB4) +
+  plot_annotation(title = "Figure B. Distribution of key characteristics by species")
+fig_B
+```
+####Save plot B
+```{r}
+# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_B.png", fig_B, width = 14, height = 14, dpi = 300)
+```
+### Plot C1
+```{r}
+# ====================================================================
+# C. 第三張：LOS group（<=LOS vs >LOS）下的組成差異：不堆疊版本
+#    → C1：overall；C2：分物種
+# ====================================================================
+
+## 1. LOS vs special_condition（每個 LOS panel 裡 Normal / Special 各一根） ----
+
+dfC1_cond <- austin_analysis_plot %>%
+  group_by(los_index_f, special_condition) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(los_index_f) %>%
+  mutate(prop = n / sum(n))
+
+pC1 <- ggplot(dfC1_cond,
+              aes(x = special_condition, y = prop, fill = special_condition)) +
+  geom_col() +
+  scale_prop +
+  facet_wrap(~ los_index_f) +
+  labs(
+    title = "Special intake condition by LOS group",
+    x = "Intake condition",
+    y = "Proportion",
+    fill = "Intake condition"
+  ) +
+  theme_plot
+
+## 2. LOS vs stray
+dfC1_stray <- austin_analysis_plot %>%
+  group_by(los_index_f, stray) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(los_index_f) %>%
+  mutate(prop = n / sum(n))
+
+pC_stray <- ggplot(dfC1_stray,
+                   aes(x = stray, y = prop, fill = stray)) +
+  geom_col() +
+  scale_prop +
+  facet_wrap(~ los_index_f) +
+  labs(
+    title = "Stray vs Owned by LOS group",
+    x = "Origin (Stray / Owned)",
+    y = "Proportion",
+    fill = "Origin"
+  ) +
+  theme_plot
+
+## 3. LOS vs animal_type（每個 LOS panel 裡 Dog / Cat 各一根） -------------
+
+dfC1_spec <- austin_analysis_plot %>%
+  group_by(los_index_f, animal_type) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(los_index_f) %>%
+  mutate(prop = n / sum(n))
+
+pC2 <- ggplot(dfC1_spec,
+              aes(x = animal_type, y = prop, fill = animal_type)) +
+  geom_col() +
+  scale_prop +
+  facet_wrap(~ los_index_f) +
+  labs(
+    title = "Species composition by LOS group",
+    x = "Species",
+    y = "Proportion",
+    fill = "Species"
+  ) +
+  theme_plot
+
+fig_C1 <- (pC1 / pC_stray / pC2) +
+  plot_annotation(title = "Figure C1. LOS groups: Intake condition, Origin, and Species")
+fig_C1
+```
+####Save plot C1
+```{r}
+# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C1.png", fig_C1, width = 10, height = 6, dpi = 300)
+```
+### Plot C2
+```{r}
+## C2：Dog / Cat × LOS，類別用「並排 bar」（不堆疊） -------------------
+
+make_C2_plot <- function(var_name, fill_lab, title_text) {
+  var_sym <- rlang::sym(var_name)
+  
+  df <- austin_analysis_plot %>%
+    group_by(animal_type, los_index_f, !!var_sym) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    group_by(animal_type, los_index_f) %>%
+    mutate(prop = n / sum(n))
+  
+  ggplot(
+    df,
+    aes(
+      x = los_index_f,
+      y = prop,
+      fill = !!var_sym,
+      group = !!var_sym   # 明確告訴 ggplot：以類別分組來 dodge
+    )
+  ) +
+    geom_col(position = "dodge") +   # 不再是 stack
+    scale_prop +
+    facet_wrap(~ animal_type) +
+    labs(
+      title = title_text,
+      x = "LOS group (median cutoff)",
+      y = "Proportion",
+      fill = fill_lab
+    ) +
+    theme_plot
+}
+
+pC3 <- make_C2_plot(
+  var_name   = "sex",
+  fill_lab   = "Sex",
+  title_text = "Sex composition by LOS group and species"
+)
+
+pC4 <- make_C2_plot(
+  var_name   = "age_group",
+  fill_lab   = "Age group",
+  title_text = "Age group composition by LOS group and species"
+)
+
+pC5 <- make_C2_plot(
+  var_name   = "is_mixed",
+  fill_lab   = "Breed type",
+  title_text = "Breed type composition by LOS group and species"
+)
+
+pC6 <- make_C2_plot(
+  var_name   = "color_type",
+  fill_lab   = "Color type",
+  title_text = "Color type composition by LOS group and species"
+)
+
+pC7 <- make_C2_plot(
+  var_name   = "sterilized",
+  fill_lab   = "Sterilization",
+  title_text = "Sterilization status by LOS group and species"
+)
+
+fig_C2 <- (pC3 / pC4 / pC5 / pC6 / pC7) +
+  plot_annotation(title = "Figure C2. Composition by LOS group and species")
+fig_C2
+```
+####Save plot C2
+```{r}
+# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C2.png", fig_C2, width = 14, height = 16, dpi = 300)
+```
+### Plot D
+```{r}
+# ====================================================================
+# D. 熱力圖：LOS
+# ====================================================================
+
+# 要放進 heatmap 的類別變數
+vars_cat <- c(
+  "animal_type",
+  "sex",
+  "age_group",
+  "sterilized",
+  "special_condition",
+  "is_mixed",
+  "color_type",
+  "stray"
+)
+
+# 建立 summary for all：每個變數 × 每個 level 的 LOS 指標
+los_summary <- map_df(vars_cat, function(v) {
+  austin_analysis_plot %>%
+    group_by(level = .data[[v]]) %>%      # 用 level 暫存每個類別
+    summarise(
+      n          = n(),
+      median_los = median(stay_day_round),
+      mean_los   = mean(stay_day_round),
+      prop_short = mean(los_index == 1),  # <= overall median LOS 的比例
+      .groups    = "drop"
+    ) %>%
+    mutate(
+      variable = v,
+      level    = fct_inorder(level)       # 保留原本的順序
+    )
+}) %>%
+  mutate(
+    variable = factor(variable, levels = vars_cat)  # 控制欄順序
+  )
+
+# D1：overall heatmap
+fig_D1 <- ggplot(los_summary,
+                 aes(x = variable, y = level, fill = median_los)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(
+    name = "Median LOS\n(days)",
+    low = "white",
+    high = "steelblue"
+  ) +
+  labs(
+    title = "Figure D1. Median LOS by category (Overall)",
+    x = "Variable",
+    y = "Category level"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    plot.title  = element_text(face = "bold", hjust = 0),
+    panel.grid  = element_blank()
+  )
+
+# summary by animal type
+los_summary_by_species <- map_df(vars_cat, function(v) {
+  austin_analysis_plot %>%
+    group_by(animal_type, level = .data[[v]]) %>%
+    summarise(
+      n          = n(),
+      median_los = median(stay_day_round),
+      mean_los   = mean(stay_day_round),
+      prop_short = mean(los_index == 1),
+      .groups    = "drop"
+    ) %>%
+    mutate(
+      variable = v,
+      level    = fct_inorder(level)
+    )
+}) %>%
+  mutate(
+    variable = factor(variable, levels = vars_cat)
+  )
+
+# D2：by species heatmap
+fig_D2 <- ggplot(los_summary_by_species,
+                 aes(x = variable, y = level, fill = median_los)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(
+    name = "Median LOS\n(days)",
+    low = "white",
+    high = "steelblue"
+  ) +
+  facet_wrap(~ animal_type) +
+  labs(
+    title = "Figure D2. Median LOS by category and species",
+    x = "Variable",
+    y = "Category level"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    strip.text  = element_text(face = "bold"),
+    plot.title  = element_text(face = "bold", hjust = 0),
+    panel.grid  = element_blank()
+  )
+
+fig_D <- fig_D1 / fig_D2 +
+  plot_annotation(
+    title = "Figure D. LOS Heatmaps: Overall and by Species",
+    theme = theme(plot.title = element_text(face = "bold", size = 15, hjust = 0))
+  )
+
+fig_D
+```
+####Save plot D
+```{r}
+# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_D.png", fig_D, width = 12, height = 14, dpi = 300)
+# ---
+```
+
+##- Analysis part
+!!這函數要改dir存檔!!
+```{r}
+# func for result saving
+save_all_outputs <- function(plot_obj, table_obj, name,
+                             base_dir = "/Users/nnychhi/Desktop/austin_outputs") {
+  
+  fig_dir   <- file.path(base_dir, "fig")
+  table_dir <- file.path(base_dir, "table")
+  
+  if(!dir.exists(fig_dir))   dir.create(fig_dir, recursive = TRUE)
+  if(!dir.exists(table_dir)) dir.create(table_dir, recursive = TRUE)
+  
+  # 1. plot
+  ggsave(file.path(fig_dir, paste0(name, "_plot.png")),
+         plot = plot_obj, width = 10, height = 6, dpi = 300)
+  
+  # 2. table html
+  html_file <- file.path(table_dir, paste0(name, "_table.html"))
+  gtsave(table_obj, html_file)
+  
+  # 3. table png
+  webshot2::webshot(html_file,
+                    file = file.path(table_dir, paste0(name, "_table.png")),
+                    zoom = 2)
+}
+```
+
+###A. LPM: all
+```{r}
+# LPM: all ---
+lpm_all <- lm(
+  los_index ~ animal_type + sex + is_mixed + color_type +
+    sterilized + age_group + special_condition + stray,
+  data = austin_for_analysis_all
+)
+
+lpm_all_summary <- tidy(lpm_all, conf.int = TRUE)
+
+# HC1 robust variance
+vc_hc1_lpm_all <- sandwich::vcovHC(lpm_all, type = "HC1")
+tidy_lpm_hc1 <- broom::tidy(lpm_all, conf.int = TRUE, vcov = vc_hc1_lpm_all)
+```
+####a.1 Coefficient plot: LPM_all
+```{r}
+# star function for coefficient table
+star <- function(p){
+  ifelse(p < 0.01, "***",
+         ifelse(p < 0.05, "**",
+                ifelse(p < 0.10, "*", "")))
+}
+
+# prepare for coefficient plot
+coef_order_lpm <- c(
+  "Animal: Cat",
+  "Sex: Female",
+  "Breed: Mixed",
+  "Color: Bicolor",
+  "Color: Patterned",
+  "Color: Tricolor+",
+  "Sterilized",
+  "Age: Juvenile",
+  "Special intake",
+  "Stray"
+)
+
+coef_plot_lpm <- tidy_lpm_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "animal_typeCat"           = "Animal: Cat",
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    term = factor(term, levels = rev(coef_order_lpm))
+  )
+
+ # coefficient plot: lpm, All
+plot_lpm_all <- ggplot(coef_plot_lpm, aes(x = term, y = estimate)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0.2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  coord_flip() +
+  labs(
+    title = "Effect of Characteristics on Short Stay (LOS_index)",
+    subtitle = "LPM with HC1 robust standard errors",
+    x = "",
+    y = "Change in probability of short stay"
+  ) +
+  theme_minimal(base_size = 13)
+```
+####a.2 Result table: LPM_all
+```{r}
+# prepare for result table
+tbl_lpm_all <- tidy_lpm_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "animal_typeCat"           = "Animal: Cat",
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    sig  = star(p.value),
+    est_with_star = ifelse(
+      sig == "",
+      sprintf("%.3f", estimate),
+      sprintf("%.3f<sup>%s</sup>", estimate, sig)
+    ),
+    ci_col = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+  ) %>%
+  transmute(
+    Term = term,
+    Estimate = est_with_star,
+    `Std. Error (HC1)` = sprintf("%.3f", std.error),
+    `95% CI` = ci_col,
+    `p-value` = sprintf("%.3f", p.value)
+  )
+
+ # result table
+g_stats_lpm <- glance(lpm_all)
+y_mean_lpm  <- mean(austin_for_analysis_all$los_index, na.rm = TRUE)
+
+result_tbl_lpm_all <- tbl_lpm_all %>%
+  gt() %>%
+  tab_header(
+    title = md("**LPM results with HC1 robust standard errors**"),
+    subtitle = md(
+      glue("Outcome: **los_index** (1 = stay ≤ overall median LOS).  ",
+           "Mean outcome = **{sprintf('%.3f', y_mean_lpm)}**")
+    )
+  ) %>%
+  fmt_markdown(columns = "Estimate") %>%
+  cols_label(
+    Term = "Variable",
+    Estimate = "Estimate",
+    `Std. Error (HC1)` = "Std. Error (HC1)",
+    `95% CI` = "95% CI",
+    `p-value` = "p-value"
+  ) %>%
+  cols_align(
+    align = "left",
+    columns = c(Term) 
+  ) %>%
+  cols_align(
+    align = "right",
+    columns = c("Estimate", "Std. Error (HC1)", "95% CI", "p-value")
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      paste0(
+        "**Base groups:** Animal = Dog; Sterilization = Intact; Sex = Male; ",
+        "Breed = Purebred; Color = Solid; Age = Adult; ",
+        "Intake condition = Normal; Origin = Owned."
+      )
+    )
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(size = "smaller", color = "gray40", align = "left")
+    ),
+    locations = cells_source_notes()
+  ) %>%
+  opt_row_striping()
+
+result_tbl_lpm_all
+```
+####a.3 Save table & plot
+```{r}
+# save table & plot
+# save_all_outputs(
+#   plot_obj  = plot_lpm_all, 
+#   table_obj = result_tbl_lpm_all,
+#   name      = "lpm_all"
+# )
+```
+
+###B. LPM: Dog
+```{r}
+lpm_dog <- lm(
+  los_index ~ sex + is_mixed + color_type +
+    sterilized + age_group + special_condition + stray,
+  data = austin_for_analysis_dog
+)
+
+lpm_dog_summary <- tidy(lpm_dog, conf.int = TRUE)
+
+# HC1 robust variance
+vc_hc1_lpm_dog <- sandwich::vcovHC(lpm_dog, type = "HC1")
+tidy_lpm_dog_hc1 <- broom::tidy(lpm_dog, conf.int = TRUE, vcov = vc_hc1_lpm_dog)
+```
+####b.1 Coefficient plot: LPM_dog
+```{r}
+# prepare for coefficient plot
+coef_order_lpm_dog <- c(
+  "Sex: Female",
+  "Breed: Mixed",
+  "Color: Bicolor",
+  "Color: Patterned",
+  "Color: Tricolor+",
+  "Sterilized",
+  "Age: Juvenile",
+  "Special intake",
+  "Stray"
+)
+
+coef_plot_lpm_dog <- tidy_lpm_dog_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    term = factor(term, levels = rev(coef_order_lpm_dog))
+  )
+
+ # coefficient plot: lpm, Dog
+plot_lpm_dog <- ggplot(coef_plot_lpm_dog, aes(x = term, y = estimate)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0.2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  coord_flip() +
+  labs(
+    title = "Effect of Characteristics on Short Stay (Dogs only)",
+    subtitle = "LPM with HC1 robust standard errors",
+    x = "",
+    y = "Change in probability of short stay"
+  ) +
+  theme_minimal(base_size = 13)
+```
+####b.2 Result table: LPM_dog
+```{r}
+# prepare for result table
+tbl_lpm_dog <- tidy_lpm_dog_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    sig  = star(p.value),
+    est_with_star = ifelse(
+      sig == "",
+      sprintf("%.3f", estimate),
+      sprintf("%.3f<sup>%s</sup>", estimate, sig)
+    ),
+    ci_col = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+  ) %>%
+  transmute(
+    Term = term,
+    Estimate = est_with_star,
+    `Std. Error (HC1)` = sprintf("%.3f", std.error),
+    `95% CI` = ci_col,
+    `p-value` = sprintf("%.3f", p.value)
+  )
+
+ # result table
+g_stats_lpm_dog <- glance(lpm_dog)
+y_mean_lpm_dog  <- mean(austin_for_analysis_dog$los_index, na.rm = TRUE)
+
+result_tbl_lpm_dog <- tbl_lpm_dog %>%
+  gt() %>%
+  tab_header(
+    title = md("**LPM results with HC1 robust standard errors (Dogs only)**"),
+    subtitle = md(
+      glue("Outcome: **los_index** (1 = stay ≤ species-specific median LOS for dogs).  ",
+           "Mean outcome = **{sprintf('%.3f', y_mean_lpm_dog)}**")
+    )
+  ) %>%
+  fmt_markdown(columns = "Estimate") %>%
+  cols_label(
+    Term = "Variable",
+    Estimate = "Estimate",
+    `Std. Error (HC1)` = "Std. Error (HC1)",
+    `95% CI` = "95% CI",
+    `p-value` = "p-value"
+  ) %>%
+  cols_align(
+    align = "left",
+    columns = c(Term)
+  ) %>%
+  cols_align(
+    align = "right",
+    columns = c("Estimate", "Std. Error (HC1)", "95% CI", "p-value")
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      glue("**R²** = {sprintf('%.3f', g_stats_lpm_dog$r.squared)}; ",
+           "**Adj. R²** = {sprintf('%.3f', g_stats_lpm_dog$adj.r.squared)}; ",
+           "**N** = {g_stats_lpm_dog$nobs}")
+    )
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      paste0(
+        "**Base groups (Dogs):** Sex = Male; Breed = Purebred; Color = Solid; ",
+        "Sterilization = Intact; Age = Adult; Intake condition = Normal; Origin = Owned."
+      )
+    )
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(size = "smaller", color = "gray40", align = "left")
+    ),
+    locations = cells_source_notes()
+  ) %>%
+  opt_row_striping()
+
+result_tbl_lpm_dog
+```
+####b.3 Save table & plot
+```{r}
+# save table & plot
+# save_all_outputs(
+#   plot_obj  = plot_lpm_dog, 
+#   table_obj = result_tbl_lpm_dog,
+#   name      = "lpm_dog"
+# )
+```
+
+###C. Logit: Dog
+```{r}
+logit_dog <- glm(
+  los_index ~ sex + is_mixed + color_type +
+    sterilized + age_group + special_condition + stray,
+  data   = austin_for_analysis_dog,
+  family = binomial(link = "logit")
+)
+
+# HC1 robust variance
+vc_hc1_logit_dog <- sandwich::vcovHC(logit_dog, type = "HC1")
+tidy_logit_dog_hc1 <- broom::tidy(logit_dog, conf.int = TRUE, vcov = vc_hc1_logit_dog)
+```
+####c.1 Coefficient plot: Logit_dog
+```{r}
+# prepare for coefficient plot
+coef_order_logit_dog <- c(
+  "Sex: Female",
+  "Breed: Mixed",
+  "Color: Bicolor",
+  "Color: Patterned",
+  "Color: Tricolor+",
+  "Sterilized",
+  "Age: Juvenile",
+  "Special intake",
+  "Stray"
+)
+
+coef_plot_logit_dog <- tidy_logit_dog_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    term = factor(term, levels = rev(coef_order_logit_dog))
+  )
+
+ # coefficient plot: logit, Dog
+plot_logit_dog <- ggplot(coef_plot_logit_dog, aes(x = term, y = estimate)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0.2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  coord_flip() +
+  labs(
+    title = "Logit: Determinants of Short Stay (Dogs only)",
+    subtitle = "Log-odds coefficients with HC1 robust standard errors",
+    x = "",
+    y = "Log-odds coefficient"
+  ) +
+  theme_minimal(base_size = 13)
+```
+####c.2 Result table: Logit_dog
+```{r}
+# prepare for result table
+tbl_logit_dog <- tidy_logit_dog_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    sig  = star(p.value),
+    est_with_star = ifelse(
+      sig == "",
+      sprintf("%.3f", estimate),
+      sprintf("%.3f<sup>%s</sup>", estimate, sig)
+    ),
+    ci_col = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+  ) %>%
+  transmute(
+    Term = term,
+    Estimate = est_with_star,
+    `Std. Error (HC1)` = sprintf("%.3f", std.error),
+    `95% CI` = ci_col,
+    `p-value` = sprintf("%.3f", p.value)
+  )
+
+ # result table
+g_stats_logit_dog <- glance(logit_dog)
+y_mean_logit_dog  <- mean(austin_for_analysis_dog$los_index, na.rm = TRUE)
+
+result_tbl_logit_dog <- tbl_logit_dog %>%
+  gt() %>%
+  tab_header(
+    title = md("**Logit results with HC1 robust standard errors (Dogs only)**"),
+    subtitle = md(
+      glue(
+        "Outcome: **los_index** (1 = stay ≤ species-specific median LOS for dogs).  ",
+        "Mean outcome = **{sprintf('%.3f', y_mean_logit_dog)}**"
+      )
+    )
+  ) %>%
+  fmt_markdown(columns = "Estimate") %>%
+  cols_label(
+    Term = "Variable",
+    Estimate = "Estimate (log-odds)",
+    `Std. Error (HC1)` = "Std. Error (HC1)",
+    `95% CI` = "95% CI",
+    `p-value` = "p-value"
+  ) %>%
+  cols_align(
+    align = "left",
+    columns = c(Term)
+  ) %>%
+  cols_align(
+    align = "right",
+    columns = c("Estimate", "Std. Error (HC1)", "95% CI", "p-value")
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      glue("**AIC** = {sprintf('%.1f', g_stats_logit_dog$AIC)}; ",
+           "**N** = {g_stats_logit_dog$nobs}")
+    )
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      paste0(
+        "**Base groups (Dogs):** Sex = Male; Breed = Purebred; Color = Solid; ",
+        "Sterilization = Intact; Age = Adult; Intake condition = Normal; ",
+        "Origin = Owned (vs Stray)."
+      )
+    )
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(size = "smaller", color = "gray40", align = "left")
+    ),
+    locations = cells_source_notes()
+  ) %>%
+  opt_row_striping()
+
+result_tbl_logit_dog
+```
+####c.3 Save table & plot
+```{r}
+# save table & plot
+# save_all_outputs(
+#   plot_obj  = plot_logit_dog,
+#   table_obj = result_tbl_logit_dog,
+#   name      = "logit_dog"
+# )
+```
+
+###D. LPM: Cat
+```{r}
+lpm_cat <- lm(
+  los_index ~ sex + is_mixed + color_type +
+    sterilized + age_group + special_condition + stray,
+  data = austin_for_analysis_cat
+)
+
+lpm_cat_summary <- tidy(lpm_cat, conf.int = TRUE)
+
+# HC1 robust variance
+vc_hc1_lpm_cat <- sandwich::vcovHC(lpm_cat, type = "HC1")
+tidy_lpm_cat_hc1 <- broom::tidy(lpm_cat, conf.int = TRUE, vcov = vc_hc1_lpm_cat)
+```
+####d.1 Coefficient plot: LPM_cat
+```{r}
+# prepare for coefficient plot
+coef_order_lpm_cat <- c(
+  "Sex: Female",
+  "Breed: Mixed",
+  "Color: Bicolor",
+  "Color: Patterned",
+  "Color: Tricolor+",
+  "Sterilized",
+  "Age: Juvenile",
+  "Special intake",
+  "Stray"
+)
+
+coef_plot_lpm_cat <- tidy_lpm_cat_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    term = factor(term, levels = rev(coef_order_lpm_cat))
+  )
+
+ # coefficient plot: lpm, Cat
+plot_lpm_cat <- ggplot(coef_plot_lpm_cat, aes(x = term, y = estimate)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0.2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  coord_flip() +
+  labs(
+    title = "Effect of Characteristics on Short Stay (Cats only)",
+    subtitle = "LPM with HC1 robust standard errors",
+    x = "",
+    y = "Change in probability of short stay"
+  ) +
+  theme_minimal(base_size = 13)
+```
+####d.2 Result table: LPM_cat
+```{r}
+# prepare for result table
+tbl_lpm_cat <- tidy_lpm_cat_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    sig  = star(p.value),
+    est_with_star = ifelse(
+      sig == "",
+      sprintf("%.3f", estimate),
+      sprintf("%.3f<sup>%s</sup>", estimate, sig)
+    ),
+    ci_col = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+  ) %>%
+  transmute(
+    Term = term,
+    Estimate = est_with_star,
+    `Std. Error (HC1)` = sprintf("%.3f", std.error),
+    `95% CI` = ci_col,
+    `p-value` = sprintf("%.3f", p.value)
+  )
+
+ # result table
+g_stats_lpm_cat <- glance(lpm_cat)
+y_mean_lpm_cat  <- mean(austin_for_analysis_cat$los_index, na.rm = TRUE)
+
+result_tbl_lpm_cat <- tbl_lpm_cat %>%
+  gt() %>%
+  tab_header(
+    title = md("**LPM results with HC1 robust standard errors (Cats only)**"),
+    subtitle = md(
+      glue("Outcome: **los_index** (1 = stay ≤ species-specific median LOS for cats).  ",
+           "Mean outcome = **{sprintf('%.3f', y_mean_lpm_cat)}**")
+    )
+  ) %>%
+  fmt_markdown(columns = "Estimate") %>%
+  cols_label(
+    Term = "Variable",
+    Estimate = "Estimate",
+    `Std. Error (HC1)` = "Std. Error (HC1)",
+    `95% CI` = "95% CI",
+    `p-value` = "p-value"
+  ) %>%
+  cols_align(
+    align = "left",
+    columns = c(Term)
+  ) %>%
+  cols_align(
+    align = "right",
+    columns = c("Estimate", "Std. Error (HC1)", "95% CI", "p-value")
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      glue("**R²** = {sprintf('%.3f', g_stats_lpm_cat$r.squared)}; ",
+           "**Adj. R²** = {sprintf('%.3f', g_stats_lpm_cat$adj.r.squared)}; ",
+           "**N** = {g_stats_lpm_cat$nobs}")
+    )
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      paste0(
+        "**Base groups (Cats):** Sex = Male; Breed = Purebred; Color = Solid; ",
+        "Sterilization = Intact; Age = Adult; Intake condition = Normal; ",
+        "Origin = Owned (vs Stray)."
+      )
+    )
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(size = "smaller", color = "gray40", align = "left")
+    ),
+    locations = cells_source_notes()
+  ) %>%
+  opt_row_striping()
+
+result_tbl_lpm_cat
+```
+####d.3 Save table & plot
+```{r}
+# save table & plot
+# save_all_outputs(
+#   plot_obj  = plot_lpm_cat,
+#   table_obj = result_tbl_lpm_cat,
+#   name      = "lpm_cat"
+# )
+```
+
+###E. Logit: Cat
+```{r}
+logit_cat <- glm(
+  los_index ~ sex + is_mixed + color_type +
+    sterilized + age_group + special_condition + stray,
+  data   = austin_for_analysis_cat,
+  family = binomial(link = "logit")
+)
+
+# HC1 robust variance
+vc_hc1_logit_cat <- sandwich::vcovHC(logit_cat, type = "HC1")
+tidy_logit_cat_hc1 <- broom::tidy(logit_cat, conf.int = TRUE, vcov = vc_hc1_logit_cat)
+```
+####e.1 Coefficient plot: Logit_cat
+```{r}
+# prepare for coefficient plot
+coef_order_logit_cat <- coef_order_lpm_cat
+
+coef_plot_logit_cat <- tidy_logit_cat_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    term = factor(term, levels = rev(coef_order_logit_cat))
+  )
+
+ # coefficient plot: logit, Cat
+plot_logit_cat <- ggplot(coef_plot_logit_cat, aes(x = term, y = estimate)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high),
+                width = 0.2, color = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  coord_flip() +
+  labs(
+    title = "Logit: Determinants of Short Stay (Cats only)",
+    subtitle = "Log-odds coefficients with HC1 robust standard errors",
+    x = "",
+    y = "Log-odds coefficient"
+  ) +
+  theme_minimal(base_size = 13)
+```
+####e.2 Result table: Logit_cat
+```{r}
+# prepare for result table
+tbl_logit_cat <- tidy_logit_cat_hc1 %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = recode(
+      term,
+      "sexFemale"                = "Sex: Female",
+      "is_mixedMixed"            = "Breed: Mixed",
+      "color_typeBicolor"        = "Color: Bicolor",
+      "color_typePatterned"      = "Color: Patterned",
+      "color_typeTricolor+"      = "Color: Tricolor+",
+      "sterilizedSterilized"     = "Sterilized",
+      "age_groupJuvenile"        = "Age: Juvenile",
+      "special_conditionSpecial" = "Special intake",
+      "strayStray"               = "Stray"
+    ),
+    sig  = star(p.value),
+    est_with_star = ifelse(
+      sig == "",
+      sprintf("%.3f", estimate),
+      sprintf("%.3f<sup>%s</sup>", estimate, sig)
+    ),
+    ci_col = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+  ) %>%
+  transmute(
+    Term = term,
+    Estimate = est_with_star,
+    `Std. Error (HC1)` = sprintf("%.3f", std.error),
+    `95% CI` = ci_col,
+    `p-value` = sprintf("%.3f", p.value)
+  )
+
+ # result table
+g_stats_logit_cat <- glance(logit_cat)
+y_mean_logit_cat  <- mean(austin_for_analysis_cat$los_index, na.rm = TRUE)
+
+result_tbl_logit_cat <- tbl_logit_cat %>%
+  gt() %>%
+  tab_header(
+    title = md("**Logit results with HC1 robust standard errors (Cats only)**"),
+    subtitle = md(
+      glue("Outcome: **los_index** (1 = stay ≤ species-specific median LOS for cats).  ",
+           "Mean outcome = **{sprintf('%.3f', y_mean_logit_cat)}**")
+    )
+  ) %>%
+  fmt_markdown(columns = "Estimate") %>%
+  cols_label(
+    Term = "Variable",
+    Estimate = "Estimate (log-odds)",
+    `Std. Error (HC1)` = "Std. Error (HC1)",
+    `95% CI` = "95% CI",
+    `p-value` = "p-value"
+  ) %>%
+  cols_align(
+    align = "left",
+    columns = c(Term)
+  ) %>%
+  cols_align(
+    align = "right",
+    columns = c("Estimate", "Std. Error (HC1)", "95% CI", "p-value")
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      glue("**AIC** = {sprintf('%.1f', g_stats_logit_cat$AIC)}; ",
+           "**N** = {g_stats_logit_cat$nobs}")
+    )
+  ) %>%
+  tab_source_note(
+    source_note = md(
+      paste0(
+        "**Base groups (Cats):** Sex = Male; Breed = Purebred; Color = Solid; ",
+        "Sterilization = Intact; Age = Adult; Intake condition = Normal; ",
+        "Origin = Owned (vs Stray)."
+      )
+    )
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(size = "smaller", color = "gray40", align = "left")
+    ),
+    locations = cells_source_notes()
+  ) %>%
+  opt_row_striping()
+
+result_tbl_logit_cat
+```
+####e.3 Save table & plot
+```{r}
+# save table & plot
+# save_all_outputs(
+#   plot_obj  = plot_logit_cat,
+#   table_obj = result_tbl_logit_cat,
+#   name      = "logit_cat"
+# )
+```
+
+###- Comparison table
+### 1. Dog: LPM vs Logit
+```{r}
+# LPM vs Logit
+var_label_map <- c(
+  sexFemale                = "Sex: Female",
+  is_mixedMixed            = "Breed: Mixed",
+  color_typeBicolor        = "Color: Bicolor",
+  color_typePatterned      = "Color: Patterned",
+  `color_typeTricolor+`    = "Color: Tricolor+",
+  sterilizedSterilized     = "Sterilized",
+  age_groupJuvenile        = "Age: Juvenile",
+  special_conditionSpecial = "Special intake",
+  strayStray               = "Stray"
+)
+
+var_order <- c(
+  "Sex: Female",
+  "Breed: Mixed",
+  "Color: Bicolor",
+  "Color: Patterned",
+  "Color: Tricolor+",
+  "Sterilized",
+  "Age: Juvenile",
+  "Special intake",
+  "Stray"
+)
+
+ ## for model of dog
+# 平均邊際效果（Average Marginal Effects, AME）
+me_dog <- margins::margins(logit_dog, vcov = vc_hc1_logit_dog)
+me_dog_sum <- summary(me_dog)  # data.frame: factor, AME, SE, z, p, lower, upper
+
+# LPM_dog row：把估計值＋星號組成文字
+lpm_dog_row <- tidy_lpm_dog_hc1 %>%
+  dplyr::filter(term != "(Intercept)") %>%
+  dplyr::mutate(
+    var_label = dplyr::recode(term, !!!var_label_map),
+    sig       = star(p.value),
+    value     = sprintf("%.3f%s", estimate, sig)
+  ) %>%
+  dplyr::select(var_label, value) %>%
+  dplyr::filter(!is.na(var_label))
+
+# Logit_dog AME row
+logit_dog_row <- me_dog_sum %>%
+  dplyr::mutate(
+    term      = factor,
+    var_label = dplyr::recode(as.character(term), !!!var_label_map),
+    sig       = star(p),
+    value     = sprintf("%.3f%s", AME, sig)
+  ) %>%
+  dplyr::select(var_label, value) %>%
+  dplyr::filter(!is.na(var_label))
+
+# 狗：長 → 寬
+comp_dog_long <- bind_rows(
+  lpm_dog_row  %>% mutate(Model = "LPM"),
+  logit_dog_row %>% mutate(Model = "Logit (AME)")
+)
+
+comp_dog_wide <- comp_dog_long %>%
+  mutate(var_label = factor(var_label, levels = var_order)) %>%
+  arrange(Model, var_label) %>%
+  tidyr::pivot_wider(
+    names_from  = var_label,
+    values_from = value
+  )
+
+# 變成 gt table，並讓星號變成右上角（用 markdown）
+comp_dog_tbl <- comp_dog_wide %>%
+  gt() %>%
+  tab_header(
+    title    = md("**Dogs: LPM vs Logit (Average Marginal Effects)**"),
+    subtitle = md("Rows = model, Columns = covariates; Logit entries are AME")
+  ) %>%
+  fmt_markdown(columns = -Model) %>%  # 把 <sup> 解析成上標
+  cols_label(Model = "Model") %>%
+  opt_row_striping()
+
+comp_dog_tbl
+```
+#### 1-1. Save Dog: LPM vs Logit table
+```{r}
+# gtsave(comp_dog_tbl, "/Users/nnychhi/Desktop/austin_outputs/table/comp_dog_lpm_logit.html")
+# webshot2::webshot("/Users/nnychhi/Desktop/austin_outputs/table/comp_dog_lpm_logit.html",
+#                   file = "/Users/nnychhi/Desktop/austin_outputs/table/comp_dog_lpm_logit.png", zoom = 2)
+```
+
+### 2. Cat: LPM vs Logit
+```{r}
+ ## for model of cat
+me_cat <- margins::margins(logit_cat, vcov = vc_hc1_logit_cat)
+me_cat_sum <- summary(me_cat)
+
+lpm_cat_row <- tidy_lpm_cat_hc1 %>%
+  dplyr::filter(term != "(Intercept)") %>%
+  dplyr::mutate(
+    var_label = dplyr::recode(term, !!!var_label_map),
+    sig       = star(p.value),
+    value     = sprintf("%.3f%s", estimate, sig)
+  ) %>%
+  dplyr::select(var_label, value) %>%
+  dplyr::filter(!is.na(var_label))
+
+logit_cat_row <- me_cat_sum %>%
+  dplyr::mutate(
+    term      = factor,
+    var_label = dplyr::recode(as.character(term), !!!var_label_map),
+    sig       = star(p),
+    value     = sprintf("%.3f%s", AME, sig)
+  ) %>%
+  dplyr::select(var_label, value) %>%
+  dplyr::filter(!is.na(var_label))
+
+comp_cat_long <- bind_rows(
+  lpm_cat_row   %>% mutate(Model = "LPM"),
+  logit_cat_row %>% mutate(Model = "Logit (AME)")
+)
+
+comp_cat_wide <- comp_cat_long %>%
+  mutate(var_label = factor(var_label, levels = var_order)) %>%
+  arrange(Model, var_label) %>%
+  tidyr::pivot_wider(
+    names_from  = var_label,
+    values_from = value
+  )
+
+comp_cat_tbl <- comp_cat_wide %>%
+  gt() %>%
+  tab_header(
+    title    = md("**Cats: LPM vs Logit (Average Marginal Effects)**"),
+    subtitle = md("Rows = model, Columns = covariates; Logit entries are AME")
+  ) %>%
+  fmt_markdown(columns = -Model) %>%
+  cols_label(Model = "Model") %>%
+  opt_row_striping()
+
+comp_cat_tbl
+```
+#### 2-1. Save Cat: LPM vs Logit table
+```{r}
+# gtsave(comp_cat_tbl, "/Users/nnychhi/Desktop/austin_outputs/table/comp_cat_lpm_logit.html")
+# webshot2::webshot("/Users/nnychhi/Desktop/austin_outputs/table/comp_cat_lpm_logit.html",
+#                   file = "/Users/nnychhi/Desktop/austin_outputs/table/comp_cat_lpm_logit.png", zoom = 2)
+```
+
+- Supplementary: interaction OLS & Cox model
+```{r}
+## OLS with interaction: animal x color ---
+# lm_inter <- lm(
+#   log_stay_day_round ~ 
+#     animal_type * color_type + 
+#     animal_type * sterilized + 
+#     sex + 
+#     is_mixed,
+#   data = austin_for_analysis
+# )
+# 
+# vc_hc1_lm_inter <- sandwich::vcovHC(lm_inter, type = "HC1")
+# tidy_inter <- broom::tidy(lm_inter, conf.int = TRUE, vcov = vc_hc1_lm_inter)
+# 
+# order_inter <- c(
+#   "Animal: Cat",
+#   "Sex: Female",
+#   "Sterilized",
+#   "Breed: Mixed",
+#   "Color: Bicolor",
+#   "Color: Patterned",
+#   "Color: Tricolor+",
+#   "Cat × Bicolor",
+#   "Cat × Patterned",
+#   "Cat × Tricolor+",
+#   "Cat × Sterilized"
+# )
+# 
+# tidy_inter2 <- tidy_inter %>%
+#   filter(term != "(Intercept)") %>%
+#   mutate(
+#     term = recode(term,
+#                   # main effects
+#                   "animal_typeCat"           = "Animal: Cat",
+#                   "color_typeBicolor"        = "Color: Bicolor",
+#                   "color_typeTricolor+"      = "Color: Tricolor+",
+#                   "color_typePatterned"      = "Color: Patterned",
+#                   "sterilizedSterilized"     = "Sterilized",
+#                   "sexFemale"                = "Sex: Female",
+#                   "is_mixedMixed"            = "Breed: Mixed",
+#                   
+#                   # interaction terms
+#                   "animal_typeCat:color_typeBicolor"   = "Cat × Bicolor",
+#                   "animal_typeCat:color_typeTricolor+" = "Cat × Tricolor+",
+#                   "animal_typeCat:color_typePatterned" = "Cat × Patterned",
+#                   "animal_typeCat:sterilizedSterilized"= "Cat × Sterilized"
+#     ),
+#     term = factor(term, levels = rev(order_inter)),
+#     sig = case_when(
+#       p.value < 0.01 ~ "***",
+#       p.value < 0.05 ~ "**",
+#       p.value < 0.10 ~ "*",
+#       TRUE ~ ""
+#     ),
+#     est_with_star = if_else(
+#       sig == "", 
+#       sprintf("%.3f", estimate),
+#       sprintf("%.3f<sup>%s</sup>", estimate, sig)
+#     ),
+#     ci_col = sprintf("[%.3f, %.3f]", conf.low, conf.high)
+#   )
+# 
+# ggplot(tidy_inter2, aes(x = term, y = estimate)) +
+#   geom_point(size=3, color="steelblue") +
+#   geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.2, color="steelblue") +
+#   geom_hline(yintercept = 0, linetype="dashed", color="gray50") +
+#   coord_flip() +
+#   labs(
+#     title = "Interaction Effects on Days to Adoption (log(1 + days))",
+#     subtitle = "OLS with interactions: Animal × Color, Animal × Sterilized (HC1 SE)",
+#     x = "",
+#     y = "Coefficient"
+#   ) +
+#   theme_minimal(base_size = 13)
+# 
+# tbl_inter <- tidy_inter2 %>%
+#   transmute(
+#     Term = term,
+#     Estimate = est_with_star,
+#     `Std. Error (HC1)` = sprintf("%.3f", std.error),
+#     `95% CI` = ci_col,
+#     `p-value` = sprintf("%.3f", p.value)
+#   )
+# 
+# g_stats_inter <- glance(lm_inter)
+# y_mean <- mean(austin_for_analysis$log_stay_day_round)
+# 
+# result_tbl_inter <- tbl_inter %>%
+#   gt() %>%
+#   tab_header(
+#     title = md("**OLS Interaction Model with HC1 robust standard errors**"),
+#     subtitle = md(glue("Outcome mean (log(1 + days)) = **{sprintf('%.3f', y_mean)}**"))
+#   ) %>%
+#   fmt_markdown(columns = "Estimate") %>%
+#   cols_align(
+#     align = "left", columns = vars(Term)
+#   ) %>%
+#   cols_align(
+#     align = "right",
+#     columns = c("Estimate", "Std. Error (HC1)", "95% CI", "p-value")
+#   ) %>%
+#   tab_source_note(
+#     source_note = md(
+#       glue("**R²** = {sprintf('%.3f', g_stats_inter$r.squared)}; ",
+#            "**Adj. R²** = {sprintf('%.3f', g_stats_inter$adj.r.squared)}; ",
+#            "**N** = {g_stats_inter$nobs}")
+#     )
+#   ) %>%
+#   tab_source_note(
+#     source_note = md(
+#       "**Base groups:**  
+#       Animal = Dog;  
+#       Sterilization = Intact;  
+#       Sex = Male;  
+#       Breed = Purebred;  
+#       Color = Solid."
+#     )
+#   ) %>%
+#   opt_row_striping()
+# 
+# # cox model
+# cox_fit <- coxph(
+#   Surv(stay_day_round, event = rep(1, nrow(austin_for_analysis))) ~
+#     animal_type * color_type +
+#     animal_type * sterilized +
+#     sex + is_mixed,
+#   data = austin_for_analysis
+# )
+# 
+# summary(cox_fit)
+```
