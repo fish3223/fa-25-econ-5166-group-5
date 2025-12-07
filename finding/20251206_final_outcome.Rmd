@@ -3,12 +3,21 @@ title: "20251206_final_outcome"
 author: "Yu-Chun Huang"
 date: "2025-12-06"
 output: html_document
-date: "`r format(Sys.time(), '%Y-%m-%d')`"
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
+
+# Background
+
+-   **Author**: `<Yu-Chun Huang, Chun-yu Shih>`
+-   **Created At**: `<2025-12-06>`
+-   **Research Motivation and Context (why are we interested in the findings?)**:\
+    The animal center has to balance the welfare of animals and the efficiency of corporate operations. Analyzing and explaining the staying day of animals can help us to design targeted interventions, such as behavioral training and adoption-matching activities, to reduce operational costs.
+-   **Main Findings and Takeaways**：\
+    
+-   **Future Direciton**： No future direction since it's the end of this class QQ.
 
 ```{r}
 library(readxl)
@@ -29,7 +38,8 @@ library(webshot2)
 library(margins)
 ```
 
-- Preliminary data clean up: variable preparation and redefinition
+### Preliminary data clean up: variable preparation and redefinition
+
 ```{r}
 # import data
 austin <- read.csv("/Users/nnychhi/Desktop/碩二/austin.csv")
@@ -125,7 +135,8 @@ austin_clear <- austin %>%
   rename_with(~ str_replace_all(.x, "\\.", "_"))
 ```
 
-- Further clean up for analysis: calculate for LOS, outlier exclusion
+### Further clean up for analysis: calculate for LOS, outlier exclusion
+
 ```{r}
 # prepare variable, check for incomplete and factor levels
 # (austin_clear remains some vars for future analysis)
@@ -208,7 +219,8 @@ austin_for_analysis_cat <- austin_for_analysis_cat %>%
   mutate(los_index = as.integer(stay_day_round <= los_cat)) # 0: > LOS median
 ```
 
-- Sanity check and first 10 obs.
+### Sanity check and first 10 obs.
+
 ```{r}
 nrow(austin_clear)
 nrow(austin_for_analysis)
@@ -220,12 +232,94 @@ austin_for_analysis_all %>% tabyl(los_index)
 austin_for_analysis_dog %>% tabyl(los_index)
 austin_for_analysis_cat %>% tabyl(los_index)
 
-print(austin_for_analysis_all)
-print(austin_for_analysis_dog)
-print(austin_for_analysis_cat)
+head(austin_for_analysis_all, 10)
+head(austin_for_analysis_dog, 10)
+head(austin_for_analysis_cat, 10)
 ```
 
-##- Summary plots
+## Vaiable definitions
+
+```{r var_def_table, echo = FALSE, message = FALSE, warning = FALSE}
+# 變數定義表 ---------------------------------------------------------------
+var_def <- tribble(
+  ~var_name,            ~label,                                                       ~type,           ~levels,                                                                                     ~base_group,
+  "animal_type",        "動物類別",                                         "factor",        "Dog, Cat",                                                                                "Dog",
+  "sex",                "性別",                                   "factor",        "Male, Female",                                                                            "Male",
+  "sterilized",         "被領養時是否絕育",                            "factor",        "Intact (未絕育), Sterilized (絕育)",                                                                      "Intact",
+  "is_mixed",           "是否混種品種",                                  "factor",        "Purebred (純種), Mixed (米克斯)",                                                                         "Purebred",
+  "color_type",         "顏色類型",                                   "factor",        "Solid (純色), Bicolor (雙色), Tricolor+ (三色,含以上), Patterned (特殊斑紋)",                                                    "Solid",
+  "age_group",          "年齡組別",                            "factor",        "Adult (成年), Juvenile (幼年, 小於六個月)",                                                                         "Adult",
+  "special_condition",  "入所條件是否特殊",                        "factor",        "Normal, Special (需特殊照顧)",                                                                         "Normal",
+  "stray",              "是否曾與人生活",                               "factor",        "Owned (曾被飼養), Stray (流浪)",                                                                            "Owned",
+  "stay_day_round",     "收容天數 (取到第二位)",            "numeric",       "連續數值（天數）",                                                                       NA_character_,
+  "los_index",          "是否為短收容：1 = stay ≤ median LOS",                        "binary (0/1)",  "0 = 長於中位數; 1 = 短於或等於中位數",                                                   NA_character_,
+)
+
+var_def_tbl <- var_def %>%
+  gt() %>%
+  tab_header(
+    title    = md("**Table 1. Variable definitions for Austin shelter analysis**"),
+    subtitle = md("Outcome: los_index (short stay vs. long stay)")
+  ) %>%
+  cols_label(
+    var_name   = "R 變數名稱",
+    label      = "說明",
+    type       = "型態",
+    levels     = "可能取值 / 分類",
+    base_group = "Base group (參考組)"
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  opt_row_striping()
+
+var_def_tbl
+```
+
+## Summary statistics
+
+```{r}
+# ============================================================
+# Summary statistics for ALL variables used in the 5 models
+# All treated as categorical (including los_index)
+# ============================================================
+
+vars_all <- c(
+  "los_index",
+  "animal_type",
+  "sex",
+  "is_mixed",
+  "color_type",
+  "sterilized",
+  "age_group",
+  "special_condition",
+  "stray"
+)
+
+cat_summary <- austin_for_analysis_all %>%
+  select(all_of(vars_all)) %>%
+  mutate(across(everything(), as.character)) %>%
+  pivot_longer(
+    cols      = everything(),
+    names_to  = "variable",
+    values_to = "level"
+  ) %>%
+  filter(!is.na(level)) %>%
+  count(variable, level, name = "count") %>%
+  group_by(variable) %>%
+  mutate(
+    percent = count / sum(count)
+  ) %>%
+  slice_max(order_by = count, n = 10, with_ties = FALSE) %>%
+  arrange(variable, desc(count)) %>%
+  ungroup()
+
+cat_summary
+```
+
+## Summary plots
+
 ```{r}
 # plots preparation
 austin_analysis_plot <- austin_for_analysis_all %>%
@@ -252,7 +346,9 @@ scale_prop <- scale_y_continuous(
   expand = expansion(mult = c(0, 0.02))
 )
 ```
+
 ### Plot A
+
 ```{r}
 # ====================================================================
 # A. 第一張：LOS / age_group / LOS_index / special_condition
@@ -414,11 +510,15 @@ fig_A <- (rowA1 / rowA2 / rowA3 / rowA4) +
   plot_annotation(title = "Figure A. Stay days and key LOS-related variables (overall vs by species)")
 fig_A
 ```
+
 ####Save plot A
+
 ```{r}
 # ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_A.png", fig_A, width = 14, height = 12, dpi = 300)
 ```
+
 ### Plot B
+
 ```{r}
 # ====================================================================
 # B. 第二張：貓狗分別的 sex / is_mixed / color_type / sterilized 比率
@@ -473,11 +573,15 @@ fig_B <- (rowB1 / rowB2 / rowB3 / rowB4) +
   plot_annotation(title = "Figure B. Distribution of key characteristics by species")
 fig_B
 ```
+
 ####Save plot B
+
 ```{r}
 # ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_B.png", fig_B, width = 14, height = 14, dpi = 300)
 ```
+
 ### Plot C1
+
 ```{r}
 # ====================================================================
 # C. 第三張：LOS group（<=LOS vs >LOS）下的組成差異：不堆疊版本
@@ -550,11 +654,15 @@ fig_C1 <- (pC1 / pC_stray / pC2) +
   plot_annotation(title = "Figure C1. LOS groups: Intake condition, Origin, and Species")
 fig_C1
 ```
+
 ####Save plot C1
+
 ```{r}
 # ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C1.png", fig_C1, width = 10, height = 6, dpi = 300)
 ```
+
 ### Plot C2
+
 ```{r}
 ## C2：Dog / Cat × LOS，類別用「並排 bar」（不堆疊） -------------------
 
@@ -622,11 +730,15 @@ fig_C2 <- (pC3 / pC4 / pC5 / pC6 / pC7) +
   plot_annotation(title = "Figure C2. Composition by LOS group and species")
 fig_C2
 ```
+
 ####Save plot C2
+
 ```{r}
 # ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C2.png", fig_C2, width = 14, height = 16, dpi = 300)
 ```
+
 ### Plot D
+
 ```{r}
 # ====================================================================
 # D. 熱力圖：LOS
@@ -736,16 +848,31 @@ fig_D <- fig_D1 / fig_D2 +
 
 fig_D
 ```
+
 ####Save plot D
+
 ```{r}
 # ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_D.png", fig_D, width = 12, height = 14, dpi = 300)
 # ---
 ```
 
-##- Analysis part
-!!這函數要改dir存檔!!
+## Analysis part
+
+### Our hypothesis
+1. animal type：貓狗停留天數有顯著差異
+2. sex：領養人對於貓狗存在性別偏好
+3. is_mixed：純種貓狗停留天數更短
+4. sterilized：絕育貓狗停留天數更短
+5. color_type：顏色較單純或是帶有特殊斑紋的貓狗停留天數更短
+6. age_group：幼年貓狗停留天數更短一些
+7. special_condition：入所時需要特殊照顧的貓狗停留天數更長
+8. stray：曾與人類生活過的貓狗停留天數更短
+
+* los_index定義為停留天數是否低於停留天數中位數，停留天數更短也可表示為更容易被領養
+
 ```{r}
 # func for result saving
+# !!這函數要改dir存檔!!
 save_all_outputs <- function(plot_obj, table_obj, name,
                              base_dir = "/Users/nnychhi/Desktop/austin_outputs") {
   
@@ -770,7 +897,8 @@ save_all_outputs <- function(plot_obj, table_obj, name,
 }
 ```
 
-###A. LPM: all
+## A. LPM: all
+
 ```{r}
 # LPM: all ---
 lpm_all <- lm(
@@ -785,7 +913,9 @@ lpm_all_summary <- tidy(lpm_all, conf.int = TRUE)
 vc_hc1_lpm_all <- sandwich::vcovHC(lpm_all, type = "HC1")
 tidy_lpm_hc1 <- broom::tidy(lpm_all, conf.int = TRUE, vcov = vc_hc1_lpm_all)
 ```
-####a.1 Coefficient plot: LPM_all
+
+### a.1 Coefficient plot: LPM_all
+
 ```{r}
 # star function for coefficient table
 star <- function(p){
@@ -842,7 +972,9 @@ plot_lpm_all <- ggplot(coef_plot_lpm, aes(x = term, y = estimate)) +
   ) +
   theme_minimal(base_size = 13)
 ```
-####a.2 Result table: LPM_all
+
+### a.2 Result table: LPM_all
+
 ```{r}
 # prepare for result table
 tbl_lpm_all <- tidy_lpm_hc1 %>%
@@ -925,7 +1057,9 @@ result_tbl_lpm_all <- tbl_lpm_all %>%
 
 result_tbl_lpm_all
 ```
-####a.3 Save table & plot
+
+### a.3 Save table & plot
+
 ```{r}
 # save table & plot
 # save_all_outputs(
@@ -935,7 +1069,8 @@ result_tbl_lpm_all
 # )
 ```
 
-###B. LPM: Dog
+## B. LPM: Dog
+
 ```{r}
 lpm_dog <- lm(
   los_index ~ sex + is_mixed + color_type +
@@ -949,7 +1084,9 @@ lpm_dog_summary <- tidy(lpm_dog, conf.int = TRUE)
 vc_hc1_lpm_dog <- sandwich::vcovHC(lpm_dog, type = "HC1")
 tidy_lpm_dog_hc1 <- broom::tidy(lpm_dog, conf.int = TRUE, vcov = vc_hc1_lpm_dog)
 ```
-####b.1 Coefficient plot: LPM_dog
+
+### b.1 Coefficient plot: LPM_dog
+
 ```{r}
 # prepare for coefficient plot
 coef_order_lpm_dog <- c(
@@ -997,7 +1134,9 @@ plot_lpm_dog <- ggplot(coef_plot_lpm_dog, aes(x = term, y = estimate)) +
   ) +
   theme_minimal(base_size = 13)
 ```
-####b.2 Result table: LPM_dog
+
+### b.2 Result table: LPM_dog
+
 ```{r}
 # prepare for result table
 tbl_lpm_dog <- tidy_lpm_dog_hc1 %>%
@@ -1085,7 +1224,9 @@ result_tbl_lpm_dog <- tbl_lpm_dog %>%
 
 result_tbl_lpm_dog
 ```
-####b.3 Save table & plot
+
+### b.3 Save table & plot
+
 ```{r}
 # save table & plot
 # save_all_outputs(
@@ -1095,7 +1236,8 @@ result_tbl_lpm_dog
 # )
 ```
 
-###C. Logit: Dog
+## C. Logit: Dog
+
 ```{r}
 logit_dog <- glm(
   los_index ~ sex + is_mixed + color_type +
@@ -1108,7 +1250,9 @@ logit_dog <- glm(
 vc_hc1_logit_dog <- sandwich::vcovHC(logit_dog, type = "HC1")
 tidy_logit_dog_hc1 <- broom::tidy(logit_dog, conf.int = TRUE, vcov = vc_hc1_logit_dog)
 ```
-####c.1 Coefficient plot: Logit_dog
+
+### c.1 Coefficient plot: Logit_dog
+
 ```{r}
 # prepare for coefficient plot
 coef_order_logit_dog <- c(
@@ -1156,7 +1300,9 @@ plot_logit_dog <- ggplot(coef_plot_logit_dog, aes(x = term, y = estimate)) +
   ) +
   theme_minimal(base_size = 13)
 ```
-####c.2 Result table: Logit_dog
+
+### c.2 Result table: Logit_dog
+
 ```{r}
 # prepare for result table
 tbl_logit_dog <- tidy_logit_dog_hc1 %>%
@@ -1246,7 +1392,9 @@ result_tbl_logit_dog <- tbl_logit_dog %>%
 
 result_tbl_logit_dog
 ```
-####c.3 Save table & plot
+
+### c.3 Save table & plot
+
 ```{r}
 # save table & plot
 # save_all_outputs(
@@ -1256,7 +1404,8 @@ result_tbl_logit_dog
 # )
 ```
 
-###D. LPM: Cat
+## D. LPM: Cat
+
 ```{r}
 lpm_cat <- lm(
   los_index ~ sex + is_mixed + color_type +
@@ -1270,7 +1419,9 @@ lpm_cat_summary <- tidy(lpm_cat, conf.int = TRUE)
 vc_hc1_lpm_cat <- sandwich::vcovHC(lpm_cat, type = "HC1")
 tidy_lpm_cat_hc1 <- broom::tidy(lpm_cat, conf.int = TRUE, vcov = vc_hc1_lpm_cat)
 ```
-####d.1 Coefficient plot: LPM_cat
+
+### d.1 Coefficient plot: LPM_cat
+
 ```{r}
 # prepare for coefficient plot
 coef_order_lpm_cat <- c(
@@ -1318,7 +1469,9 @@ plot_lpm_cat <- ggplot(coef_plot_lpm_cat, aes(x = term, y = estimate)) +
   ) +
   theme_minimal(base_size = 13)
 ```
-####d.2 Result table: LPM_cat
+
+### d.2 Result table: LPM_cat
+
 ```{r}
 # prepare for result table
 tbl_lpm_cat <- tidy_lpm_cat_hc1 %>%
@@ -1407,7 +1560,9 @@ result_tbl_lpm_cat <- tbl_lpm_cat %>%
 
 result_tbl_lpm_cat
 ```
-####d.3 Save table & plot
+
+### d.3 Save table & plot
+
 ```{r}
 # save table & plot
 # save_all_outputs(
@@ -1417,7 +1572,8 @@ result_tbl_lpm_cat
 # )
 ```
 
-###E. Logit: Cat
+## E. Logit: Cat
+
 ```{r}
 logit_cat <- glm(
   los_index ~ sex + is_mixed + color_type +
@@ -1430,7 +1586,9 @@ logit_cat <- glm(
 vc_hc1_logit_cat <- sandwich::vcovHC(logit_cat, type = "HC1")
 tidy_logit_cat_hc1 <- broom::tidy(logit_cat, conf.int = TRUE, vcov = vc_hc1_logit_cat)
 ```
-####e.1 Coefficient plot: Logit_cat
+
+### e.1 Coefficient plot: Logit_cat
+
 ```{r}
 # prepare for coefficient plot
 coef_order_logit_cat <- coef_order_lpm_cat
@@ -1468,7 +1626,9 @@ plot_logit_cat <- ggplot(coef_plot_logit_cat, aes(x = term, y = estimate)) +
   ) +
   theme_minimal(base_size = 13)
 ```
-####e.2 Result table: Logit_cat
+
+### e.2 Result table: Logit_cat
+
 ```{r}
 # prepare for result table
 tbl_logit_cat <- tidy_logit_cat_hc1 %>%
@@ -1556,7 +1716,9 @@ result_tbl_logit_cat <- tbl_logit_cat %>%
 
 result_tbl_logit_cat
 ```
-####e.3 Save table & plot
+
+### e.3 Save table & plot
+
 ```{r}
 # save table & plot
 # save_all_outputs(
@@ -1566,8 +1728,10 @@ result_tbl_logit_cat
 # )
 ```
 
-###- Comparison table
-### 1. Dog: LPM vs Logit
+## Comparison table
+
+## 1. Dog: LPM vs Logit
+
 ```{r}
 # LPM vs Logit
 var_label_map <- c(
@@ -1648,14 +1812,17 @@ comp_dog_tbl <- comp_dog_wide %>%
 
 comp_dog_tbl
 ```
-#### 1-1. Save Dog: LPM vs Logit table
+
+### 1-1. Save Dog: LPM vs Logit table
+
 ```{r}
 # gtsave(comp_dog_tbl, "/Users/nnychhi/Desktop/austin_outputs/table/comp_dog_lpm_logit.html")
 # webshot2::webshot("/Users/nnychhi/Desktop/austin_outputs/table/comp_dog_lpm_logit.html",
 #                   file = "/Users/nnychhi/Desktop/austin_outputs/table/comp_dog_lpm_logit.png", zoom = 2)
 ```
 
-### 2. Cat: LPM vs Logit
+## 2. Cat: LPM vs Logit
+
 ```{r}
  ## for model of cat
 me_cat <- margins::margins(logit_cat, vcov = vc_hc1_logit_cat)
@@ -1706,14 +1873,17 @@ comp_cat_tbl <- comp_cat_wide %>%
 
 comp_cat_tbl
 ```
-#### 2-1. Save Cat: LPM vs Logit table
+
+### 2-1. Save Cat: LPM vs Logit table
+
 ```{r}
 # gtsave(comp_cat_tbl, "/Users/nnychhi/Desktop/austin_outputs/table/comp_cat_lpm_logit.html")
 # webshot2::webshot("/Users/nnychhi/Desktop/austin_outputs/table/comp_cat_lpm_logit.html",
 #                   file = "/Users/nnychhi/Desktop/austin_outputs/table/comp_cat_lpm_logit.png", zoom = 2)
 ```
 
-- Supplementary: interaction OLS & Cox model
+-   Supplementary: interaction OLS & Cox model
+
 ```{r}
 ## OLS with interaction: animal x color ---
 # lm_inter <- lm(
