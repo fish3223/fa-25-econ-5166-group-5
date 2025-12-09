@@ -1,0 +1,539 @@
+---
+title: "Austin_ML"
+date: "2025-12-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# 背景（Background）
+- **作者（Author）**：Chengxiang Huang
+- **建立日期（Created At）**：20251209
+
+- **訓練資料路徑（Path to Training Data）：**
+    /data/processed/austin.csv
+
+- **測試資料路徑（Path to Testing Data）：**
+    無（本專案未切割測試集，模型評估依 10-fold Cross Validation）
+
+- **模型規格（Model Specification）：**
+    - **模型方法（Method）：**
+        - 決策樹（Decision Tree, rpart via caret）
+        - 隨機森林（Random Forest, randomForest via caret）
+
+    - **變數（Variables）：**
+        - **目標變數（Dependent Variable, Target）**：
+            - los_index  
+              （以各物種的中位數 LOS 切割：1 = 短等待時間，0 = 長等待時間）
+
+        - **自變數（Independent Variables, Features）**：
+            - sterilized（是否結紮）
+            - sex（性別）
+            - is_mixed（混種或純種）
+            - color_type（毛色分類：Solid, Bicolor, Tricolor+, Patterned）
+            - age_group（成年或幼年）
+            - special_condition（是否具有特殊健康或行為狀況）
+            - stray（來源：Owned 或 Stray）
+
+    - **調參參數（Tuning Parameters）：**
+        - **決策樹（Dog）**：
+            - 最佳 cp：0.004
+            - 最佳 minbucket：100
+            - 最佳 maxdepth：3
+
+        - **決策樹（Cat）**：
+            - 最佳 cp：0.001
+            - 最佳 minbucket：100
+            - 最佳 maxdepth：10
+
+        - **隨機森林（Dog）**：
+            - ntree = 500
+            - 最佳 mtry：6
+
+        - **隨機森林（Cat）**：
+            - ntree = 500
+            - 最佳 mtry：2
+
+    - **最佳化方法（Optimization Method）：**
+        - 使用 Grid Search
+        - 使用 10-fold Cross Validation
+
+- **主要發現與結論（Main Findings and Takeaways）：**
+    - 狗的模型：
+        - 敏感度極高（非常容易預測成短等待時間）
+        - 特異度低（較難辨識長等待動物）
+    - 貓的模型：
+        - 各項評估指標較平衡，因此表現略優於狗
+    - 隨機森林顯示最重要的變數包含：
+        - stray（是否為流浪）
+        - special_condition（是否有特殊健康狀況）
+        - age_group（成年或幼年）
+        - sterilized（是否結紮）
+
+    - **模型效能（In-sample Performance）**：
+
+      **決策樹 — Dog**  
+      - Accuracy：**0.6046**  
+      - Recall：**0.9404**  
+      - F1-score：**0.7319**  
+      - AUC：**0.6196**
+
+      **決策樹 — Cat**  
+      - Accuracy：**0.6388**  
+      - Recall：**0.5652**  
+      - F1-score：**0.6206**  
+      - AUC：**0.6468**
+
+      **隨機森林 — Dog**  
+      - Accuracy：**0.6094**  
+      - Recall：**0.8897**  
+      - F1-score：**0.7233**  
+      - AUC：**0.6024**
+
+      **隨機森林 — Cat**  
+      - Accuracy：**0.6406**  
+      - Recall：**0.5679**  
+      - F1-score：**0.6229**  
+      - AUC：**0.6646**
+
+    - **整體觀察（Summary）**：
+        - 模型準確度大致落在 0.60–0.64 間，屬中度分類性能
+        - 貓模型比狗模型稍微穩定、平衡
+        - 決策樹與隨機森林的表現差異不大
+
+    - **樣本外效能（Out-sample Performance）：**
+        - 無（本研究無外部測試資料）
+
+
+
+```{r}
+# Load packages here
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(rpart)
+library(caret)
+library(rpart.plot)
+library(randomForest)
+library(pROC)
+```
+
+```{r}
+# Load the TRAINING data
+austin <- read.csv("/Users/chengxianghuang/Downloads/austin.csv")
+austin_clear <- austin %>%
+  select(-c("Name", "Found.Location", "Sex.upon.Intake",
+            "Date.of.Birth", "Outcome.Subtype", "Age.upon.Outcome")) %>%
+  rename_with(tolower) %>%
+  filter(animal.type %in% c("Cat", "Dog"), outcome.type == "Adoption") %>%
+  mutate(animal.type = factor(animal.type, levels = c("Dog", "Cat"))) %>%
+  rename(intake.datetime = intake_datetime,
+         outcome.datetime = outcome_datetime) %>%
+  mutate(start.date = ymd_hm(intake.datetime),
+         end.date = ymd_hm(outcome.datetime),
+         stay.day.round = round(as.numeric(difftime(end.date, start.date, units = "days")), 2),
+         stay.day = floor(as.numeric(difftime(end.date, start.date, units = "days")))) %>%
+  select(-c("outcome.type", "start.date", "end.date")) %>%
+  mutate(
+    sterilized = case_when(
+      grepl("Neutered|Spayed", sex.upon.outcome, ignore.case = TRUE) ~ "Sterilized",
+      grepl("Intact", sex.upon.outcome, ignore.case = TRUE) ~ "Intact",
+      TRUE ~ "Unknown"
+    ),
+    sex = case_when(
+      sex.upon.outcome == "Unknown" ~ "Unknown",
+      TRUE ~ str_to_title(word(sex.upon.outcome, -1))
+    ),
+    sterilized = factor(sterilized, levels = c("Intact", "Sterilized", "Unknown")),
+    sex = factor(sex, levels = c("Male", "Female", "Unknown"))
+  ) %>%
+  select(-sex.upon.outcome) %>%
+  mutate(is_mixed = if_else(str_detect(breed, "Mix|/|-|&"), "Mixed", "Purebred"),
+         is_mixed = factor(is_mixed, levels = c("Purebred", "Mixed"))) %>%
+  mutate(
+    color_type = case_when(
+      str_detect(color, "(?i)Tabby|Brindle|Tortie|Calico|Merle|Point|Tick|Spotted|Speckled") ~ "Patterned",
+      str_count(color, "/|&| ") == 0 ~ "Solid",
+      str_count(color, "/|&| ") == 1 ~ "Bicolor",
+      str_count(color, "/|&| ") >= 2 ~ "Tricolor+",
+      TRUE ~ "Unknown"
+    ),
+    color_type = factor(color_type,
+                        levels = c("Solid", "Bicolor", "Tricolor+", "Patterned"))
+  ) %>%
+  mutate(
+    age_years = case_when(
+      str_detect(age.upon.intake, "day")   ~ as.numeric(str_extract(age.upon.intake, "\\d+")) / 365,
+      str_detect(age.upon.intake, "week")  ~ as.numeric(str_extract(age.upon.intake, "\\d+")) / 52,
+      str_detect(age.upon.intake, "month") ~ as.numeric(str_extract(age.upon.intake, "\\d+")) / 12,
+      str_detect(age.upon.intake, "year")  ~ as.numeric(str_extract(age.upon.intake, "\\d+")),
+      TRUE ~ NA_real_
+    ),
+    age_group = case_when(
+      age_years < 0.5 ~ "Juvenile",
+      age_years >= 0.5 ~ "Adult",
+      TRUE ~ NA_character_
+    ),
+    age_group = factor(age_group, levels = c("Adult", "Juvenile"))
+  ) %>%
+  select(-age_years) %>%
+  mutate(
+    special_condition = case_when(
+      intake.condition %in% c("Injured","Sick","Medical","Nursing","Pregnant",
+                              "Behavior","Feral", "Other") ~ "Special",
+      TRUE ~ "Normal"
+    ),
+    special_condition = factor(special_condition, levels = c("Normal", "Special"))
+  ) %>%
+  filter(!intake.type %in% c("Public Assist", "Euthanasia Request")) %>%
+  mutate(
+    stray = case_when(
+      intake.type == "Stray" ~ "Stray",
+      intake.type %in% c("Abandoned", "Owner Surrender") ~ "Owned",
+      TRUE ~ NA_character_
+    ),
+    stray = factor(stray, levels = c("Owned", "Stray"))
+  ) %>%
+  rename_with(~ str_replace_all(.x, "\\.", "_"))
+
+# 4. Prepare for ML
+
+austin_for_analysis <- austin_clear %>%
+  mutate(log_stay_day_round = log1p(stay_day_round)) %>%
+  filter(if_all(everything(), ~ !is.na(.))) %>%
+  filter(
+    if_all(where(is.factor),    ~ . != "Unknown") &
+      if_all(where(is.character), ~ . != "Unknown")
+  ) %>%
+  mutate(
+    sterilized = factor(sterilized, levels = c("Intact", "Sterilized")),
+    sex = factor(sex, levels = c("Male", "Female")),
+    color_type = factor(color_type, levels = c("Solid", "Bicolor", "Tricolor+", "Patterned")),
+    age_group = factor(age_group, levels = c("Adult", "Juvenile")),
+    special_condition = factor(special_condition, levels = c("Normal", "Special")),
+    stray = factor(stray, levels = c("Owned", "Stray"))
+  )
+
+austin_for_analysis_dog <- austin_for_analysis %>% filter(animal_type == "Dog")
+austin_for_analysis_cat <- austin_for_analysis %>% filter(animal_type == "Cat")
+
+
+# LOS Calculations & Remove Outliers
+
+los_all <- median(austin_for_analysis$stay_day_round, na.rm = TRUE)
+los_dog <- median(austin_for_analysis_dog$stay_day_round, na.rm = TRUE)
+los_cat <- median(austin_for_analysis_cat$stay_day_round, na.rm = TRUE)
+
+Q1  <- quantile(austin_for_analysis$stay_day_round, 0.25)
+Q3  <- quantile(austin_for_analysis$stay_day_round, 0.75)
+upper <- Q3 + 1.5 * (Q3 - Q1)
+
+Q1_dog  <- quantile(austin_for_analysis_dog$stay_day_round, 0.25)
+Q3_dog  <- quantile(austin_for_analysis_dog$stay_day_round, 0.75)
+upper_dog <- Q3_dog + 1.5 * (Q3_dog - Q1_dog)
+
+Q1_cat  <- quantile(austin_for_analysis_cat$stay_day_round, 0.25)
+Q3_cat  <- quantile(austin_for_analysis_cat$stay_day_round, 0.75)
+upper_cat <- Q3_cat + 1.5 * (Q3_cat - Q1_cat)
+
+austin_for_analysis_all <- austin_for_analysis %>%
+  filter(stay_day_round <= upper) %>%
+  mutate(los_index = as.integer(stay_day_round <= los_all))
+
+austin_for_analysis_dog <- austin_for_analysis_dog %>%
+  filter(stay_day_round <= upper_dog) %>%
+  mutate(los_index = as.integer(stay_day_round <= los_dog))
+
+austin_for_analysis_cat <- austin_for_analysis_cat %>%
+  filter(stay_day_round <= upper_cat) %>%
+  mutate(los_index = as.integer(stay_day_round <= los_cat))
+
+# Print the first ten observations
+head(austin_for_analysis_all, 10)
+head(austin_for_analysis_dog, 10)
+head(austin_for_analysis_cat, 10)
+
+```
+
+
+
+
+
+```{r}
+# Include the model specification here.  Please describe the model by stating, including
+# type of method used, the variables included, the hyperparameters, and
+# the method of optimization.
+```
+
+本模型為一個二元分類模型，使用決策樹（rpart）與隨機森林（randomForest）方法。  
+納入的變數包含：sterilized、sex、is_mixed、color_type、age_group、special_condition、stray。  
+
+決策樹模型的超參數包含：cp、maxdepth、minbucket，並透過 caret 的 10-fold cross-validation 進行最佳化，  
+以 ROC（AUC）作為模型選擇的主要指標。  
+
+隨機森林模型則調整 mtry（每次分裂的變數數量）與 ntree（樹數，固定為 500），  
+同樣使用 10-fold cross-validation 從多組超參數中挑選最佳組合。  
+
+#決策樹for dog
+
+```{r}
+vars <- c("sterilized", "sex", "is_mixed", "color_type",
+          "age_group", "special_condition", "stray", "los_index")
+
+df_dog_tree <- austin_for_analysis_dog[, vars]
+df_dog_tree[] <- lapply(df_dog_tree, as.factor)
+
+hyper_grid_dog <- expand.grid(
+  cp = seq(0.001, 0.02, by = 0.003),
+  minbucket = c(10, 20, 50, 100),
+  maxdepth = c(3, 4, 5)
+)
+
+results_dog_tree <- tibble()
+
+set.seed(123)
+for (i in 1:nrow(hyper_grid_dog)) {
+  cp_val <- hyper_grid_dog$cp[i]
+  minbucket_val <- hyper_grid_dog$minbucket[i]
+  maxdepth_val <- hyper_grid_dog$maxdepth[i]
+  
+  model <- train(
+    los_index ~ .,
+    data = df_dog_tree,
+    method = "rpart",
+    trControl = trainControl(method = "cv", number = 10),
+    tuneGrid = data.frame(cp = cp_val),
+    control = rpart.control(minbucket = minbucket_val, maxdepth = maxdepth_val)
+  )
+  
+  results_dog_tree <- bind_rows(results_dog_tree, tibble(
+    cp = cp_val, minbucket = minbucket_val, maxdepth = maxdepth_val,
+    Accuracy = max(model$results$Accuracy),
+    Model = list(model)
+  ))
+}
+
+best_result_dog_tree <- results_dog_tree[which.max(results_dog_tree$Accuracy), ]
+best_model_dog_tree <- best_result_dog_tree$Model[[1]]
+
+cat("DOG — Best parameters:\n")
+print(best_result_dog_tree[, c("cp", "minbucket", "maxdepth", "Accuracy")])
+
+rename_map <- c(
+  "color_typePatterned"      = "Patterned",
+  "color_typeBicolor"        = "Bicolor",
+  "color_typeTricolor+"      = "Tricolor+",
+  "sexFemale"                = "Female",
+  "is_mixedMixed"            = "Mixed",
+  "special_conditionSpecial" = "Special",
+  "sterilizedSterilized"     = "Sterilized",
+  "age_groupJuvenile"        = "Juvenile",
+  "strayStray"               = "Stray"
+)
+
+best_model_dog_tree$finalModel$frame$var <- ifelse(
+  best_model_dog_tree$finalModel$frame$var %in% names(rename_map),
+  rename_map[best_model_dog_tree$finalModel$frame$var],
+  best_model_dog_tree$finalModel$frame$var
+)
+
+rpart.plot(best_model_dog_tree$finalModel, main = "狗子最佳決策樹")
+
+pred_dog_tree <- predict(best_model_dog_tree, newdata = df_dog_tree)
+confusionMatrix(pred_dog_tree, df_dog_tree$los_index)
+```
+
+#決策樹 for cat
+
+```{r}
+df_cat_tree <- austin_for_analysis_cat[, vars]
+df_cat_tree[] <- lapply(df_cat_tree, as.factor)
+
+hyper_grid_cat <- expand.grid(
+  cp = seq(0.001, 0.02, by = 0.003),
+  minbucket = c(10, 20, 50, 100),
+  maxdepth = c(3, 5, 7, 10)
+)
+
+results_cat_tree <- tibble()
+
+set.seed(123)
+for (i in 1:nrow(hyper_grid_cat)) {
+  cp_val <- hyper_grid_cat$cp[i]
+  minbucket_val <- hyper_grid_cat$minbucket[i]
+  maxdepth_val <- hyper_grid_cat$maxdepth[i]
+  
+  model <- train(
+    los_index ~ .,
+    data = df_cat_tree,
+    method = "rpart",
+    trControl = trainControl(method = "cv", number = 10),
+    tuneGrid = data.frame(cp = cp_val),
+    control = rpart.control(minbucket = minbucket_val, maxdepth = maxdepth_val)
+  )
+  
+  results_cat_tree <- bind_rows(results_cat_tree, tibble(
+    cp = cp_val, minbucket = minbucket_val, maxdepth = maxdepth_val,
+    Accuracy = max(model$results$Accuracy),
+    Model = list(model)
+  ))
+}
+
+best_result_cat_tree <- results_cat_tree[which.max(results_cat_tree$Accuracy), ]
+best_model_cat_tree <- best_result_cat_tree$Model[[1]]
+
+cat("CAT — Best parameters:\n")
+print(best_result_cat_tree[, c("cp", "minbucket", "maxdepth", "Accuracy")])
+
+rename_map <- c(
+  "color_typePatterned"      = "Patterned",
+  "color_typeBicolor"        = "Bicolor",
+  "color_typeTricolor+"      = "Tricolor+",
+  "sexFemale"                = "Female",
+  "is_mixedMixed"            = "Mixed",
+  "special_conditionSpecial" = "Special",
+  "sterilizedSterilized"     = "Sterilized",
+  "age_groupJuvenile"        = "Juvenile",
+  "strayStray"               = "Stray"
+)
+
+best_model_cat_tree$finalModel$frame$var <- ifelse(
+  best_model_cat_tree$finalModel$frame$var %in% names(rename_map),
+  rename_map[best_model_cat_tree$finalModel$frame$var],
+  best_model_cat_tree$finalModel$frame$var
+)
+
+rpart.plot(best_model_cat_tree$finalModel, main = "貓咪最佳決策樹")
+
+pred_cat_tree <- predict(best_model_cat_tree, newdata = df_cat_tree)
+confusionMatrix(pred_cat_tree, df_cat_tree$los_index)
+
+```
+
+
+
+#隨機森林 for cat
+
+```{r}
+vars_rf <- c("stray", "special_condition", "age_group", "is_mixed",
+             "sex", "color_type", "sterilized", "los_index")
+
+df_cat_rf <- austin_for_analysis_cat[, vars_rf]
+df_cat_rf[] <- lapply(df_cat_rf, as.factor)
+
+set.seed(123)
+ctrl <- trainControl(method = "cv", number = 10)
+mtry_range <- expand.grid(mtry = 2:(ncol(df_cat_rf) - 1))
+
+rf_model_cat <- train(
+  los_index ~ .,
+  data = df_cat_rf,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = mtry_range,
+  importance = TRUE,
+  ntree = 500
+)
+
+print(rf_model_cat)
+
+varImpPlot(rf_model_cat$finalModel, main = "貓咪隨機森林 - 變數重要性")
+
+
+pred_cat_rf <- predict(rf_model_cat, newdata = df_cat_rf)
+confusionMatrix(pred_cat_rf, df_cat_rf$los_index)
+
+```
+
+
+#隨機森林 for dog
+
+```{r}
+vars_rf <- c("stray", "special_condition", "age_group", "is_mixed",
+             "sex", "color_type", "sterilized", "los_index")
+
+df_dog_rf <- austin_for_analysis_dog[, vars_rf]
+df_dog_rf[] <- lapply(df_dog_rf, as.factor)
+
+set.seed(123)
+mtry_range <- expand.grid(mtry = 2:(ncol(df_dog_rf) - 1))
+
+rf_model_dog <- train(
+  los_index ~ .,
+  data = df_dog_rf,
+  method = "rf",
+  trControl = ctrl,
+  tuneGrid = mtry_range,
+  importance = TRUE,
+  ntree = 500
+)
+
+print(rf_model_dog)
+
+varImpPlot(rf_model_dog$finalModel, main = "狗子隨機森林 - 變數重要性")
+
+pred_dog_rf <- predict(rf_model_dog, newdata = df_dog_rf)
+confusionMatrix(pred_dog_rf, df_dog_rf$los_index)
+
+```
+
+
+
+```{r}
+
+compute_metrics <- function(model, data, target_var) {
+  
+  data[[target_var]] <- factor(data[[target_var]], levels = c("1", "0"))
+  
+  pred_class <- predict(model, newdata = data)
+  
+
+  pred_class <- factor(pred_class, levels = c("1", "0"))
+
+  pred_prob <- predict(model, newdata = data, type = "prob")[, 2]
+  
+  cm <- confusionMatrix(pred_class, data[[target_var]], positive = "1")
+  
+  accuracy <- cm$overall["Accuracy"]
+  recall   <- cm$byClass["Sensitivity"] 
+  f1       <- cm$byClass["F1"]
+  
+  roc_obj <- roc(data[[target_var]], pred_prob, levels = c("0", "1"), direction = "<")
+  auc_val <- auc(roc_obj)
+  
+  list(
+    ConfusionMatrix = cm,
+    Accuracy = accuracy,
+    Recall = recall,
+    F1 = f1,
+    AUC = auc_val
+  )
+}
+
+
+print_model_result <- function(name, metrics) {
+  cat("\n============================================================\n")
+  cat(paste(" Performance Metrics —", name, "\n"))
+  cat("============================================================\n")
+  print(metrics$ConfusionMatrix)
+  cat("\nAccuracy:", round(metrics$Accuracy, 4), "\n")
+  cat("Recall:", round(metrics$Recall, 4), "\n")
+  cat("F1-score:", round(metrics$F1, 4), "\n")
+  cat("AUC:", round(metrics$AUC, 4), "\n")
+}
+
+
+
+metrics_dog_tree <- compute_metrics(best_model_dog_tree, df_dog_tree, "los_index")
+metrics_cat_tree <- compute_metrics(best_model_cat_tree, df_cat_tree, "los_index")
+metrics_dog_rf   <- compute_metrics(rf_model_dog,       df_dog_rf,   "los_index")
+metrics_cat_rf   <- compute_metrics(rf_model_cat,       df_cat_rf,   "los_index")
+
+
+print_model_result("Dog — Decision Tree", metrics_dog_tree)
+print_model_result("Cat — Decision Tree", metrics_cat_tree)
+print_model_result("Dog — Random Forest", metrics_dog_rf)
+print_model_result("Cat — Random Forest", metrics_cat_rf)
+
+```
