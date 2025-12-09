@@ -46,5 +46,6 @@ After the poster presentation, please highlight each member's key contribution t
 
 
 **`<史淳瑜>`**'s contribution
+- `<Baseline 分析：敘述統計、結果判讀>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/43912ba0808ac07698f9003f2d2b1d33a5010975)
 - `<Poster 製作：包含 Poster 排版、資料簡述、結果判讀>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/b731df65840585e9abe20983cf620013a20c2b3b)
 - `<Final Poster 報告>`
