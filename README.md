@@ -53,3 +53,8 @@ After the poster presentation, please highlight each member's key contribution t
 - `<Proposal 共同撰寫資料搜尋部分 >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/133700bf8366fc9ff7a34c58181545cea6fe156f)
 - `<資料搜尋與初步整理（搜集Austin, Longbeach, Sanjose等地資料），並進行欄位對齊與清理、資料合併與初步資料觀察>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/958aae084234a030a22adcaf389c0008c6faab7e)
 - `<Final Poster 協助研究動機、研究方法撰寫>`
+
+**`<黃呈祥>`**'s contribution
+- `<Proposal 共同撰寫資料搜尋部分 >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/133700bf8366fc9ff7a34c58181545cea6fe156f)
+- `<建立機器學習模型以及呈現結果>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commits/main/finding/Austin_ML.Rmd)
+- `<Final Poster 協助研究動機、研究方法撰寫>`
