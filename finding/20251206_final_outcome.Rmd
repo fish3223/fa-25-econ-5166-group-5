@@ -16,7 +16,7 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 -   **Research Motivation and Context (why are we interested in the findings?)**:\
     The animal center has to balance the welfare of animals and the efficiency of corporate operations. Analyzing and explaining the staying day of animals can help us to design targeted interventions, such as behavioral training and adoption-matching activities, to reduce operational costs.
 -   **Main Findings and Takeaways**：\
-    
+    眾多變數均有顯著影響下，我們利用 Random Forest 模型決定出影響力較大的關鍵因子。同時也在給定特徵下，以決策樹模型預測等候收養的長短天數結果。
 -   **Future Direciton**： No future direction since it's the end of this class QQ.
 
 ```{r}
