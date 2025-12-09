@@ -43,6 +43,8 @@ After the poster presentation, please highlight each member's key contribution t
 - `<Proposal 共同撰寫已經整理提議 >`
 - `<會議記錄撰寫 >`
 - `<海報影印 >`
+
+
 **`<NAME>`**'s contribution
 - `<Contribution >` [see commit](url)
 - `<Contribution >` [see commit](url)
