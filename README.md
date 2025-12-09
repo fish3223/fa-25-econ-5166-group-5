@@ -45,6 +45,6 @@ After the poster presentation, please highlight each member's key contribution t
 - `<海報影印 >`
 
 
-**`<NAME>`**'s contribution
-- `<Contribution >` [see commit](url)
-- `<Contribution >` [see commit](url)
+**`<史淳瑜>`**'s contribution
+- `<Poster 製作>` [see commit](url)
+- `<Final Poster 報告>`
