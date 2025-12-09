@@ -44,8 +44,12 @@ After the poster presentation, please highlight each member's key contribution t
 - `<會議記錄撰寫 >`
 - `<海報影印 >`
 
-
 **`<史淳瑜>`**'s contribution
 - `<Baseline 分析：敘述統計、結果判讀>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/43912ba0808ac07698f9003f2d2b1d33a5010975)
 - `<Poster 製作：包含 Poster 排版、資料簡述、結果判讀>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/b731df65840585e9abe20983cf620013a20c2b3b)
 - `<Final Poster 報告>`
+
+**`<鄭賀榕>`**'s contribution
+- `<Proposal 共同撰寫資料搜尋部分 >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/133700bf8366fc9ff7a34c58181545cea6fe156f)
+- `<資料搜尋與初步整理（搜集Austin, Longbeach, Sanjose等地資料），並進行欄位對齊與清理、資料合併與初步資料觀察>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/958aae084234a030a22adcaf389c0008c6faab7e)
+- `<Final Poster 協助研究動機、研究方法撰寫>`
