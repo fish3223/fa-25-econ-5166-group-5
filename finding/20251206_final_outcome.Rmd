@@ -503,7 +503,8 @@ pA4_cat <- austin_analysis_plot %>%
   theme_plot
 
 rowA4 <- pA4_all | pA4_dog | pA4_cat
-
+```
+```{r, fig_A, fig.width=14, fig.height=12}
 ## Figure A -----------------------------------------------------------
 
 fig_A <- (rowA1 / rowA2 / rowA3 / rowA4) +
@@ -568,7 +569,8 @@ rowB1 <- make_species_prop_row("sex", "Sex")
 rowB2 <- make_species_prop_row("is_mixed", "Breed type")
 rowB3 <- make_species_prop_row("color_type", "Color type")
 rowB4 <- make_species_prop_row("sterilized", "Sterilization status")
-
+```
+```{r, fig_B, fig.width=14, fig.height=14}
 fig_B <- (rowB1 / rowB2 / rowB3 / rowB4) +
   plot_annotation(title = "Figure B. Distribution of key characteristics by species")
 fig_B
@@ -649,7 +651,8 @@ pC2 <- ggplot(dfC1_spec,
     fill = "Species"
   ) +
   theme_plot
-
+```
+```{r, fig_C1, fig.width=10, fig.height=6}
 fig_C1 <- (pC1 / pC_stray / pC2) +
   plot_annotation(title = "Figure C1. LOS groups: Intake condition, Origin, and Species")
 fig_C1
@@ -725,7 +728,8 @@ pC7 <- make_C2_plot(
   fill_lab   = "Sterilization",
   title_text = "Sterilization status by LOS group and species"
 )
-
+```
+```{r, fig_C2, fig.width=14, fig.height=16}
 fig_C2 <- (pC3 / pC4 / pC5 / pC6 / pC7) +
   plot_annotation(title = "Figure C2. Composition by LOS group and species")
 fig_C2
@@ -839,7 +843,8 @@ fig_D2 <- ggplot(los_summary_by_species,
     plot.title  = element_text(face = "bold", hjust = 0),
     panel.grid  = element_blank()
   )
-
+```
+```{r, fig_D, fig.width=12, fig.height=14}
 fig_D <- fig_D1 / fig_D2 +
   plot_annotation(
     title = "Figure D. LOS Heatmaps: Overall and by Species",
