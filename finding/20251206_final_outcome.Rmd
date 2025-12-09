@@ -994,6 +994,7 @@ plot_lpm_all <- ggplot(coef_plot_lpm, aes(x = term, y = estimate)) +
     y = "Change in probability of short stay"
   ) +
   theme_minimal(base_size = 13)
+  plot_lpm_all
 ```
 
 ### a.2 Result table: LPM_all
@@ -1159,6 +1160,7 @@ plot_lpm_dog <- ggplot(coef_plot_lpm_dog, aes(x = term, y = estimate)) +
     y = "Change in probability of short stay"
   ) +
   theme_minimal(base_size = 13)
+  plot_lpm_dog
 ```
 
 ### b.2 Result table: LPM_dog
@@ -1325,6 +1327,7 @@ plot_logit_dog <- ggplot(coef_plot_logit_dog, aes(x = term, y = estimate)) +
     y = "Log-odds coefficient"
   ) +
   theme_minimal(base_size = 13)
+  plot_logit_dog
 ```
 
 ### c.2 Result table: Logit_dog
@@ -1496,6 +1499,7 @@ plot_lpm_cat <- ggplot(coef_plot_lpm_cat, aes(x = term, y = estimate)) +
     y = "Change in probability of short stay"
   ) +
   theme_minimal(base_size = 13)
+  plot_lpm_cat
 ```
 
 ### d.2 Result table: LPM_cat
@@ -1653,6 +1657,7 @@ plot_logit_cat <- ggplot(coef_plot_logit_cat, aes(x = term, y = estimate)) +
     y = "Log-odds coefficient"
   ) +
   theme_minimal(base_size = 13)
+  plot_logit_cat
 ```
 
 ### e.2 Result table: Logit_cat
