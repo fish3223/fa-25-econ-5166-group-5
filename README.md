@@ -46,5 +46,5 @@ After the poster presentation, please highlight each member's key contribution t
 
 
 **`<史淳瑜>`**'s contribution
-- `<Poster 製作>` [see commit](url)
+- `<Poster 製作>` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5.git)
 - `<Final Poster 報告>`
