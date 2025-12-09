@@ -38,9 +38,10 @@ After the poster presentation, please highlight each member's key contribution t
 - `<Proposal 共同撰寫 >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/133700bf8366fc9ff7a34c58181545cea6fe156f)
 - `<Baseline 分析執行：數據清理與前處理、模型分析與結果 >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/270b41019c6bfaabc5011c1ad6566c9322da3aa2)
 - `<Final 分析執行與部分結果撰寫：前處理調整、統計圖像呈現、模型分析與結果(LPM, Logit) >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/2cb52fb68d8b54a1887686a3b43bbf57719d08cf)
+
 **`<施卲>`**'s contribution
 - `<Proposal 共同撰寫已經整理提議 >`
-- `<會議記錄 >`
+- `<會議記錄撰寫 >`
 - `<海報影印 >`
 **`<NAME>`**'s contribution
 - `<Contribution >` [see commit](url)
