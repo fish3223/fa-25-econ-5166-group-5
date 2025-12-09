@@ -15,10 +15,12 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 -   **Created At**: `<2025-12-06>`
 -   **Research Motivation and Context (why are we interested in the findings?)**:\
     The animal center has to balance the welfare of animals and the efficiency of corporate operations. Analyzing and explaining the staying day of animals can help us to design targeted interventions, such as behavioral training and adoption-matching activities, to reduce operational costs.
+    儘管動物領養風氣日益盛行，git動物收容機構於寵物的安置、管理上仍需面臨龐大的開支。為此，本小組運用美國 Austin 2013 年至今的貓狗領養資料，分析收容天數 LOS (Length of stay day) 與寵物特徵之關係，旨在降低媒合過程中的搜尋摩擦成本，以期優化資源配置。
 -   **Main Findings and Takeaways**：\
-    眾多變數均有顯著影響下，我們利用 Random Forest 模型決定出影響力較大的關鍵因子。同時也在給定特徵下，以決策樹模型預測等候收養的長短天數結果。
--   **Future Direciton**： No future direction since it's the end of this class QQ.
-
+    模型一：在控制其他變數之下，提供證據支持我們在初步進行資料觀察的發現。
+    模型二：眾多變數均有顯著影響下，我們利用 Random Forest 模型決定出影響力較大的關鍵因子。同時也在給定特徵下，以決策樹模型預測等候收養的長短天數結果。
+-   **Future Direciton**： 
+    本組在結論發現部分特徵出現不容易被收養的情況，而礙於篇幅，本研究未提供何種方針進一步改善此情況，或許可留待後續研究深入探究。
 ```{r}
 library(readxl)
 library(tidyverse)
@@ -172,11 +174,13 @@ austin_for_analysis_cat <- austin_for_analysis %>%
   filter(animal_type == "Cat")
 
 # calculate LOS
+# 統計兩者收養花費時間 LOS 及其他各變數分佈情況，並以 LOS 之中位數作為分切點，觀察不同變數是否顯著關聯。
 los_all <- median(austin_for_analysis$stay_day_round, na.rm = TRUE)
 los_dog <- median(austin_for_analysis_dog$stay_day_round, na.rm = TRUE)
 los_cat <- median(austin_for_analysis_cat$stay_day_round, na.rm = TRUE)
 
 # outliers determination
+# 為避免收容動物有：進入待收養名單時間過短、需長期接受照護等特殊因素，本組限縮觀察資料於已被領養之貓狗，並以 IQR 法排除右尾極端值。
 Q1  <- quantile(austin_for_analysis$stay_day_round, 0.25)
 Q3  <- quantile(austin_for_analysis$stay_day_round, 0.75)
 IQR <- Q3 - Q1
@@ -283,6 +287,10 @@ var_def_tbl
 # ============================================================
 # Summary statistics for ALL variables used in the 5 models
 # All treated as categorical (including los_index)
+# 統計資料分佈型態，發現貓、狗的收養天數絕大部分皆低於 25 天。
+# 進入收容機構的貓、狗性別比例幾乎相等。
+# 而在健康狀況、品種、結紮與否則呈現不對稱的比例分佈，絕大部分的貓狗均為健康正常、已結紮且混種的情況。
+# 然而我們以六個月為基準將貓狗分為幼年、成年，以及毛色部分，貓狗則有不同的分佈情況。
 # ============================================================
 
 vars_all <- c(
@@ -429,6 +437,8 @@ pA2_cat <- austin_analysis_plot %>%
 rowA2 <- pA2_all | pA2_dog | pA2_cat
 
 ## row3: LOS_index 比例（整體 / Dog / Cat） --------------------------
+# 觀察不同特徵下，貓狗的收養天數差異。survival curve 顯示給定相同天數下，狗狗被收養的比例大於貓咪被收養的比例，顯示美國市場對於貓、狗的偏好差異。
+# 因此我們在後續的模型中，貓、狗均分別討論。
 
 pA3_all <- ggplot(austin_analysis_plot, aes(x = los_index_f)) +
   geom_bar(aes(y = after_stat(prop), group = 1), fill = "seagreen3") +
@@ -515,7 +525,7 @@ fig_A
 ####Save plot A
 
 ```{r}
-# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_A.png", fig_A, width = 14, height = 12, dpi = 300)
+ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_A.png", fig_A, width = 14, height = 12, dpi = 300)
 ```
 
 ### Plot B
@@ -579,7 +589,7 @@ fig_B
 ####Save plot B
 
 ```{r}
-# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_B.png", fig_B, width = 14, height = 14, dpi = 300)
+ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_B.png", fig_B, width = 14, height = 14, dpi = 300)
 ```
 
 ### Plot C1
@@ -661,13 +671,15 @@ fig_C1
 ####Save plot C1
 
 ```{r}
-# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C1.png", fig_C1, width = 10, height = 6, dpi = 300)
+ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C1.png", fig_C1, width = 10, height = 6, dpi = 300)
 ```
 
 ### Plot C2
 
 ```{r}
 ## C2：Dog / Cat × LOS，類別用「並排 bar」（不堆疊） -------------------
+# Intake condition 若為 Special，表示貓狗在進入收容機構時可能有受傷、生病或懷孕等特殊情況。
+# Special 中收容天數低於 LOS 的比例明顯較高於 LOS 的比例更少（我們將 LOS 以中位數為基準切分，因此兩群體的比例大約各半）。
 
 make_C2_plot <- function(var_name, fill_lab, title_text) {
   var_sym <- rlang::sym(var_name)
@@ -738,7 +750,7 @@ fig_C2
 ####Save plot C2
 
 ```{r}
-# ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C2.png", fig_C2, width = 14, height = 16, dpi = 300)
+ggsave("/Users/nnychhi/Desktop/austin_outputs/Figure_C2.png", fig_C2, width = 14, height = 16, dpi = 300)
 ```
 
 ### Plot D
@@ -875,6 +887,9 @@ fig_D
 
 * los_index定義為停留天數是否低於停留天數中位數，停留天數更短也可表示為更容易被領養
 
+# 然而以上關係可能係受到其他效果的間接影響。例如已經結紮的貓咪較容易被收養可能主因為該群體貓咪多半已成年，成年的貓咪又較不受到收養者的喜好。
+# 因此我們需進一步以迴歸模型控制其他變因，藉以驗證資料初步的觀察。
+
 ```{r}
 # func for result saving
 # !!這函數要改dir存檔!!
@@ -906,6 +921,9 @@ save_all_outputs <- function(plot_obj, table_obj, name,
 
 ```{r}
 # LPM: all ---
+# 利用二元變數迴歸模型，設定被解釋變數 Y = 1 表示貓、狗收養天數 < median LOS，亦即較快被領養。
+# 因此係數的正、負方向即分別代表領養速度的快、慢。表格標題所列之類別變數則代表該特徵 = 1，例如雌性的狗則 Female = 1。
+
 lpm_all <- lm(
   los_index ~ animal_type + sex + is_mixed + color_type +
     sterilized + age_group + special_condition + stray,
@@ -1067,16 +1085,19 @@ result_tbl_lpm_all
 
 ```{r}
 # save table & plot
-# save_all_outputs(
-#   plot_obj  = plot_lpm_all, 
-#   table_obj = result_tbl_lpm_all,
-#   name      = "lpm_all"
-# )
+save_all_outputs(
+  plot_obj  = plot_lpm_all, 
+  table_obj = result_tbl_lpm_all,
+  name      = "lpm_all"
+)
 ```
 
 ## B. LPM: Dog
 
 ```{r}
+# 根據 LPM 和 Logit 兩模型的結果，影響較顯著的是 Special Intake。
+# 在控制其他條件不變下，進入收容中心若是具如受傷、懷孕等特殊情形，較一般情況下，更快被收養的機率降低 35.5%。可能原因為具有特殊情況的寵物需要花費時間進行治療、協助生產等。
+# 次之則是幼犬具有較高的短期收養機率，第三個影響因子則是毛色越多，短期內被收養的機率越低，反映市場較不喜愛三色狗。而這三者迴歸結果均與此前的研究假設相符。
 lpm_dog <- lm(
   los_index ~ sex + is_mixed + color_type +
     sterilized + age_group + special_condition + stray,
@@ -1402,16 +1423,18 @@ result_tbl_logit_dog
 
 ```{r}
 # save table & plot
-# save_all_outputs(
-#   plot_obj  = plot_logit_dog,
-#   table_obj = result_tbl_logit_dog,
-#   name      = "logit_dog"
-# )
+save_all_outputs(
+  plot_obj  = plot_logit_dog,
+  table_obj = result_tbl_logit_dog,
+  name      = "logit_dog"
+)
 ```
 
 ## D. LPM: Cat
 
 ```{r}
+# 相較狗狗的迴歸結果，控制其他條件不變下，具有特別圖案的貓咪則較快被收養，本組推測許多貓咪的毛色帶有條紋，因此受到領養人的喜愛。
+# 而狗狗則鮮少有具規律之特殊圖案，因此較無法受到市場的青睞。
 lpm_cat <- lm(
   los_index ~ sex + is_mixed + color_type +
     sterilized + age_group + special_condition + stray,
