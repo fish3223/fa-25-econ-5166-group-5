@@ -34,9 +34,10 @@ the folder `notebook-templates` contains the jupyter notebooks and R markdown ex
 ## Each Member's Key Contribution
 After the poster presentation, please highlight each member's key contribution to the project. Please include the link to specific commits (e.g., a page like [this](https://github.com/yu-chang-chen/FA25-ECON-5166-Group-Project-Template/commit/29e276672f667af5cd7b198871033748fc3ec3ee)) for my reference.
 
-**`<NAME>`**'s contribution
-- `<Contribution >` [see commit](url)
-- `<Contribution >` [see commit](url)
+**`<黃鈺鈞>`**'s contribution
+- `<Proposal 共同撰寫 >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/133700bf8366fc9ff7a34c58181545cea6fe156f)
+- `<Baseline 分析執行：數據清理與前處理、模型分析與結果 >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/270b41019c6bfaabc5011c1ad6566c9322da3aa2)
+- `<Final 分析執行與部分結果撰寫：前處理調整、統計圖像呈現、模型分析與結果(LPM, Logit部分) >` [see commit](https://github.com/fish3223/fa-25-econ-5166-group-5/commit/2cb52fb68d8b54a1887686a3b43bbf57719d08cf)
 
 **`<NAME>`**'s contribution
 - `<Contribution >` [see commit](url)
