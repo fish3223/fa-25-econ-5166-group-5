@@ -42,6 +42,7 @@ After the poster presentation, please highlight each member's key contribution t
 **`<施卲>`**'s contribution
 - `<Proposal 共同撰寫以及整理提議 >`
 - `<會議記錄撰寫 >`
+- `<proposal上台報告 >`
 - `<海報影印 >`
 
 **`<史淳瑜>`**'s contribution
