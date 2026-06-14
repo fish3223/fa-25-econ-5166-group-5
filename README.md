@@ -1,6 +1,6 @@
 # research-repo-template
 This is the template repository for the ECON 5516 final project.
-
+Final Result File：DSSR_Poster.pdf
 ## How to use this template
 1. Click on the "Use this template" button at the top right of the page.
 2. Fill in the repository name and description.
